@@ -57,7 +57,6 @@ options_t parse_options(int argc, char *argv[]) {
                              false);
   TCLAP::SwitchArg udp_arg("u", "udp", "Use UDP hardware setup", cmd, false);
   TCLAP::SwitchArg tcp_arg("t", "tcp", "Use TCP hardware setup", cmd, false);
-  TCLAP::SwitchArg roce_arg("r", "roce", "Use RoCE hardware setup", cmd, false);
   TCLAP::ValueArg<std::string> xclbin_arg(
       "x", "xclbin", "xclbin of accl driver if hardware mode is used", false,
       "accl.xclbin", "file");
@@ -74,10 +73,9 @@ options_t parse_options(int argc, char *argv[]) {
   try {
     cmd.parse(argc, argv);
     if (hardware_arg.getValue()) {
-      if (axis3_arg.getValue() + udp_arg.getValue() + tcp_arg.getValue() +
-              roce_arg.getValue() != 1) {
-        throw std::runtime_error("When using hardware, specify one of axis3, "
-                                 "tcp, udp, or roce mode, but not both.");
+      if (axis3_arg.getValue() + udp_arg.getValue() + tcp_arg.getValue() != 1) {
+        throw std::runtime_error("When using hardware, specify exactly one of axis3, "
+                                 "tcp, or udp modes.");
       }
     }
   } catch (std::exception &e) {
@@ -94,13 +92,12 @@ options_t parse_options(int argc, char *argv[]) {
   opts.count = count_arg.getValue();
   opts.rxbuf_count = bufcount_arg.getValue();
   opts.rxbuf_size = bufsize_arg.getValue() * 1024; // convert to bytes
-  opts.segment_size = opts.rxbuf_size;
+  opts.max_eager_count = opts.rxbuf_size;
   opts.debug = debug_arg.getValue();
   opts.hardware = hardware_arg.getValue();
   opts.axis3 = axis3_arg.getValue();
   opts.udp = udp_arg.getValue();
   opts.tcp = tcp_arg.getValue();
-  opts.roce = roce_arg.getValue();
   opts.device_index = device_index_arg.getValue();
   opts.xclbin = xclbin_arg.getValue();
   opts.test_xrt_simulator = xrt_simulator_ready(opts);

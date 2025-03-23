@@ -28,6 +28,10 @@
 #define NUM_CTRL_STREAMS 1
 #endif
 
+#ifndef ACCL_SIM_NUM_BANKS
+#define ACCL_SIM_NUM_BANKS 1
+#endif
+
 #ifndef ACCL_SIM_MEM_SIZE_KB
 #define ACCL_SIM_MEM_SIZE_KB 256
 #endif
@@ -58,10 +62,11 @@ zmq_intf_context zmq_server_intf(unsigned int starting_port, unsigned int local_
  * @param ctx Pointer to existing ZMQ context
  * @param cfgmem Pointer to emulated configuration memory
  * @param devicemem Pointer to emulated device memory
+ * @param hostmem Pointer to emulated host memory
  * @param cmd Command stream going to emulated CCLO
  * @param sts Status stream coming from emulated CCLO
  */
-void serve_zmq(zmq_intf_context *ctx, uint32_t *cfgmem, std::vector<char> &devicemem, hlslib::Stream<ap_axiu<32,0,0,0>> cmd[NUM_CTRL_STREAMS], hlslib::Stream<ap_axiu<32,0,0,0>> sts[NUM_CTRL_STREAMS]);
+void serve_zmq(zmq_intf_context *ctx, uint32_t *cfgmem, std::vector<char> &devicemem, std::vector<char> &hostmem, hlslib::Stream<ap_axiu<32,0,0,0>> cmd[NUM_CTRL_STREAMS], hlslib::Stream<ap_axiu<32,0,0,0>> sts[NUM_CTRL_STREAMS]);
 
 /**
  * @brief Serve an input Ethernet port
@@ -104,9 +109,11 @@ void krnl_endpoint_egress_port(zmq_intf_context *ctx, hlslib::Stream<stream_word
  * @param axilite_rd_data 
  * @param axilite_wr_addr 
  * @param axilite_wr_data 
- * @param aximm_rd_addr 
+ * @param aximm_rd_addr
+ * @param aximm_rd_len 
  * @param aximm_rd_data 
- * @param aximm_wr_addr 
+ * @param aximm_wr_addr
+ * @param aximm_wr_len 
  * @param aximm_wr_data 
  * @param aximm_wr_strb 
  * @param callreq 
@@ -115,8 +122,8 @@ void krnl_endpoint_egress_port(zmq_intf_context *ctx, hlslib::Stream<stream_word
 void zmq_cmd_server(zmq_intf_context *ctx,
                 hlslib::Stream<unsigned int> &axilite_rd_addr, hlslib::Stream<unsigned int> &axilite_rd_data,
                 hlslib::Stream<unsigned int> &axilite_wr_addr, hlslib::Stream<unsigned int> &axilite_wr_data,
-                hlslib::Stream<ap_uint<64> > &aximm_rd_addr, hlslib::Stream<ap_uint<512> > &aximm_rd_data,
-                hlslib::Stream<ap_uint<64> > &aximm_wr_addr, hlslib::Stream<ap_uint<512> > &aximm_wr_data, hlslib::Stream<ap_uint<64> > &aximm_wr_strb,
+                hlslib::Stream<ap_uint<64> > &aximm_rd_addr, hlslib::Stream<ap_uint<32> > &aximm_rd_len, hlslib::Stream<ap_uint<512> > &aximm_rd_data,
+                hlslib::Stream<ap_uint<64> > &aximm_wr_addr, hlslib::Stream<ap_uint<32> > &aximm_wr_len, hlslib::Stream<ap_uint<512> > &aximm_wr_data, hlslib::Stream<ap_uint<64> > &aximm_wr_strb,
                 hlslib::Stream<unsigned int> &callreq, hlslib::Stream<unsigned int> &callack);
 
 /**

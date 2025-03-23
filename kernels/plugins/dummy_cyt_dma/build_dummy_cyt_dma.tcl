@@ -1,5 +1,5 @@
 # /*******************************************************************************
-#  Copyright (C) 2021 Xilinx, Inc
+#  Copyright (C) 2024 Advanced Micro Devices, Inc
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");
 #  you may not use this file except in compliance with the License.
@@ -51,20 +51,14 @@ switch $command {
 }
 
 
-open_project build_call_probe
+open_project dummy_cyt_dma.${device}
 
-add_files call_probe.cpp -cflags "-std=c++14 -I../../../driver/hls/ -DACCL_SYNTHESIS"
-if {$do_sim || $do_cosim} {
-    add_files -tb call_probe_tb.cpp -cflags "-std=c++14 -I. -I../../../driver/hls/ -DACCL_SYNTHESIS"
-}
+add_files dummy_cyt_dma.cpp -cflags "-std=c++14 -I../../../driver/hls/ -I../cyt_adapter -I../../../hlslib/include/hlslib/xilinx -DACCL_SYNTHESIS"
 
-set_top call_probe
+set_top cyt_dma
 
 open_solution sol1
-config_export -format xo -library ACCL -output [pwd]/call_probe.xo
-config_interface -s_axilite_mailbox both
-config_interface -s_axilite_auto_restart_counter 1
-config_interface -s_axilite_sw_reset
+config_export -format xo -library ACCL -output [pwd]/dummy_cyt_dma_${device}.xo
 
 if {$do_sim} {
     csim_design -clean

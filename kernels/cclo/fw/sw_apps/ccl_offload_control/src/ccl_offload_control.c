@@ -41,6 +41,7 @@ static uint32_t comm_cache_adr;
 
 #ifdef MB_FW_EMULATION
 //uint32_t sim_cfgmem[END_OF_EXCHMEM/4];
+uint64_t duration_us;
 uint32_t sim_cfgmem[(GPIO_BASEADDR+0x1000)/4];
 uint32_t *cfgmem = sim_cfgmem;
 hlslib::Stream<ap_axiu<32,0,0,0>, 512> cmd_fifos[5];
@@ -364,8 +365,6 @@ int rendezvous_get_any_completion(unsigned int *target_rank, uint64_t *target_ad
             putd(CMD_RNDZV_PENDING, tag);
             putd(CMD_RNDZV_PENDING, addrl);
             putd(CMD_RNDZV_PENDING, addrh);
-            putd(CMD_RNDZV_PENDING, host);
-            putd(CMD_RNDZV_PENDING, count);
             putd(CMD_RNDZV_PENDING, host);
             putd(CMD_RNDZV_PENDING, count);
         } else {
@@ -1587,6 +1586,8 @@ int reduce( unsigned int count,
                 while(rendezvous_get_addr(root_rank, &buf_addr, &dst_host, count, TAG_ANY) == NOT_READY_ERROR);
                 if(dst_host){
                     host |= RES_HOST;
+                } else {
+                    host &= ~RES_HOST;
                 }
                 //do a RDMA write to the remote address 
                 return move(
@@ -1769,13 +1770,13 @@ int reduce_scatter(
         //copy the OP0_HOST flag over RES_HOST 
         //because we're broadcasting from the allreduce result buffer
         unsigned int r_host = (host & OP0_HOST) | ((host & OP0_HOST) << 2);
-        unsigned int r_buftype = (buftype & 0xFFFFFF00) | (r_host & 0xFF);
+        unsigned int r_buftype = (buftype & 0xFFFF00FF) | ((r_host & 0xFF) << 8);
         //reduce step - we reduce back into src_buf_addr
         while(reduce(count*world.size, func, 0, src_buf_addr, src_buf_addr, comm_offset, arcfg_offset, compression, r_buftype) == NOT_READY_ERROR);
         //copy the RES_HOST flag over OP0_HOST 
         //because we're broadcasting from the allreduce result buffer
         host = (host & RES_HOST) | ((host & RES_HOST) >> 2);
-        buftype = (buftype & 0xFFFFFF00) | (host & 0xFF);
+        buftype = (buftype & 0xFFFF00FF) | ((host & 0xFF) << 8);
         //broadcast step
         while(scatter(count, 0, src_buf_addr, dst_buf_addr, comm_offset, arcfg_offset, compression, buftype) == NOT_READY_ERROR);
     } else {
@@ -1873,7 +1874,7 @@ int allreduce(
 
     if(world.size == 1){
         //corner-case copy for when running a single-node reduction
-        return copy(count, src_buf_addr, dst_buf_addr, arcfg_offset, compression, stream);
+        return copy(count, src_buf_addr, dst_buf_addr, arcfg_offset, compression, buftype);
     } else if((bytes_count > max_eager_size) && (compression == NO_COMPRESSION) && (stream == NO_STREAM)){
         //allreduce via reduction+broadcast
         //reduce step
@@ -1881,7 +1882,7 @@ int allreduce(
         //copy the RES_HOST flag over OP0_HOST 
         //because we're broadcasting from the allreduce result buffer
         host = (host & RES_HOST) | ((host & RES_HOST) >> 2);
-        buftype = (buftype & 0xFFFFFF00) | (host & 0xFF);
+        buftype = (buftype & 0xFFFF00FF) | ((host & 0xFF) << 8);
         //broadcast step
         while(broadcast(count, 0, dst_buf_addr, comm_offset, arcfg_offset, compression, buftype) == NOT_READY_ERROR);
     } else {
@@ -2135,7 +2136,7 @@ int all_to_all(
 
     if(world.size == 1){
         //corner-case single-node alltoall
-        return copy(count, src_buf_addr, dst_buf_addr, arcfg_offset, compression, stream);
+        return copy(count, src_buf_addr, dst_buf_addr, arcfg_offset, compression, buftype);
     } else if(/*(bytes_count > max_eager_size) && */(compression == NO_COMPRESSION) && (stream == NO_STREAM)){
         //alltoall via simultaneous broadcast
         //since in alltoall each endpoint must receive P-1 messages (where P is the world size)
@@ -2238,13 +2239,24 @@ void init(void) {
     SET(GPIO_DATA_REG, GPIO_SWRST_MASK);
     //mark init done
     SET(GPIO_DATA_REG, GPIO_READY_MASK);
+    //mark communicator not cached
+    comm_cached = false;
+    new_call = true;
+    flush_retries = false;
 }
 
-//reset the control module
-//since this cancels any dma movement in flight and
-//clears the queues it's necessary to reset the dma tag and dma_tag_lookup
+//reset the control module and flush any pending operations
 void encore_soft_reset(void){
-    //1. activate reset pin
+    //1. drop all calls in retry queue
+    while(tngetd(STS_CALL_RETRY) == 0){
+        int i;
+        for(i=0; i<16; i++){
+            getd(STS_CALL_RETRY);
+        }
+        Xil_Out32(RETVAL_OFFSET, NOT_READY_ERROR);
+        putd(STS_CALL, NOT_READY_ERROR);
+    }
+    //2. activate reset pin
     CLR(GPIO_DATA_REG, GPIO_SWRST_MASK);
 }
 
@@ -2268,6 +2280,10 @@ static inline void wait_for_call(void) {
 #ifndef MB_FW_EMULATION
     SET(PERFCTR_CONTROL_REG, PERFCTR_CE_MASK);
     CLR(PERFCTR_CONTROL_REG, PERFCTR_SCLR_MASK);
+#else
+    duration_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::high_resolution_clock::now().time_since_epoch())
+            .count();
 #endif
 }
 
@@ -2279,6 +2295,11 @@ void finalize_call(unsigned int retval) {
     CLR(PERFCTR_CONTROL_REG, PERFCTR_CE_MASK);
     Xil_Out32(PERFCTR_OFFSET, Xil_In32(PERFCTR_DATA_REG));
     SET(PERFCTR_CONTROL_REG, PERFCTR_SCLR_MASK);
+#else
+    duration_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::high_resolution_clock::now().time_since_epoch())
+            .count() - duration_us;
+    Xil_Out32(PERFCTR_OFFSET, (uint32_t)((duration_us*250)&0xffffffff));
 #endif
     // Done: Set done and idle
     putd(STS_CALL, retval);

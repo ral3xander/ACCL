@@ -10,7 +10,7 @@ git submodule update --init --recursive
 The project has been tested with Xilinx Vitis 2022.1 on Ubuntu 20.04.
 ```sh
 sudo apt update
-sudo apt install python3 cmake libzmqpp-dev libjsoncpp-dev libtclap-dev libopenmpi-dev xvfb
+sudo apt install python3 cmake libzmq3-dev libjsoncpp-dev libtclap-dev libopenmpi-dev xvfb
 ```
 Install the Xilinx Run-Time libraries (XRT)
 ```
@@ -38,9 +38,11 @@ The following build modes are supported:
 The following platforms are supported for Alveo boards:
 | Alveo | Platform Name                          |
 |-------|----------------------------------------|
+| U50   | xilinx_u50_gen3x16_xdma_5_202210_1     |
 | U55C  | xilinx_u55c_gen3x16_xdma_3_202210_1    |
-| U250  | xilinx_u250_gen3x16_xdma_3_1_202020_1  |
-| U280  | xilinx_u280_xdma_201920_3              |
+| U200  | xilinx_u200_gen3x16_xdma_2_202110_1    |
+| U250  | xilinx_u250_gen3x16_xdma_4_1_202210_1  |
+| U280  | xilinx_u280_gen3x16_xdma_1_202211_1    |
 
 ## Run ACCL tests
 ### Emulation or simulation tests of host-launched collectives
@@ -62,8 +64,8 @@ First start up either the emulator or simulator:
   ```sh
   cd "kernels/cclo"
   source <VIVADO_INSTALL>/settings64.sh
-  make STACK_TYPE=TCP EN_FANIN=1 simdll
-  cd "../../test/model/simulation"
+  make STACK_TYPE=TCP MODE=simdll
+  cd "../../test/model/simulator"
   source <VITIS_INSTALL>/settings64.sh
   /bin/cmake .
   python3 run.py -n <RANKS>

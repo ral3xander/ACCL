@@ -31,7 +31,6 @@ struct options_t {
   int start_port;
   unsigned int rxbuf_size;
   unsigned int rxbuf_count;
-  unsigned int segment_size;
   unsigned int max_eager_count;
   unsigned int count;
   unsigned int device_index;
@@ -41,7 +40,6 @@ struct options_t {
   bool axis3;
   bool udp;
   bool tcp;
-  bool roce;
   bool cyt_tcp;
   bool cyt_rdma;
   bool return_error;
