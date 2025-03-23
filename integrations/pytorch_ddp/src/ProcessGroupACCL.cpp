@@ -491,6 +491,26 @@ ProcessGroupACCL::ProcessGroupACCL(
   }
 }
 
+std::vector<std::uint8_t> ProcessGroupACCL::get_local_qp(unsigned int rank) {
+  std::vector<std::uint8_t> qp;
+  char *data = (char *) &ibvQpConn_vec[rank]->getQpairStruct()->local;
+  for (std::size_t i = 0; i < sizeof(fpga::ibvQ); ++i) {
+    qp.push_back(data[i]);
+  }
+
+  return qp;
+}
+
+void ProcessGroupACCL::set_remote_qp(unsigned int rank, std::vector<std::uint8_t> &qp) {
+  fpga::ibvQ remote_qp;
+  char *data = (char *) &remote_qp;
+  for (std::size_t i = 0; i < sizeof(fpga::ibvQ); ++i) {
+    data[i] = qp[i];
+  }
+
+  ibvQpConn_vec[rank]->getQpairStruct()->remote = remote_qp;
+}
+
 void ProcessGroupACCL::initialize() {
   std::cout << "PG initialize called\n";
   if (initialized) {
