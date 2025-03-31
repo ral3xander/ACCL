@@ -544,7 +544,7 @@ Master address: {ma}:{mp}, Start port for FPGA: {start_port}")
     # with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], profile_memory=True, schedule=schedule, record_shapes=True) as prof:
 
     # generic testing
-    for n in range(9,20)
+    for n in range(9,20):
         for i in range(40):
             num = 2**n * 3
             test_broadcast(num, torch.float32)
