@@ -27,7 +27,12 @@ See the section in the README on how to avoid the long build using pip
 - if you call collectives directly they are run synchronously, but eg allreduce used internally in DDP is executed async
 - The PG allocates 2 buffers and reuses them to avoid reallocation. This is supposed to be replaced with a host buffer constructor which takes an existing memory region. To change buffer type you need to use the change_buffer_type branch(maybe already pulled) at https://github.com/lawirz/ACCL 
 - The torch profiler can see the overall execution time, but setting it up to measure sub-operation within the workerthread was attempted but failed.
-
+- (under construction): Make sure to use a single MPI instance and when installing mpi4py into your python virtual environment I recommend: 
+```bash
+export MPICC=<your location>
+export MPICXX=<your location>
+pip install --no-binary=mpi4py mpi4py
+```
 ## ProcessGroupACCL.cpp
 
 ### ProcessGroup structure
