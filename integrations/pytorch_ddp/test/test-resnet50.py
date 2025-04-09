@@ -226,7 +226,8 @@ if __name__ == "__main__":
                 ranks = [accl.Rank(a, start_port + i, 0, rxbufsize) for i, a in enumerate(fpga_ips)]
         else:
             # Somehow the simulator gets stuck if I use the same rxbufsize
-            rxbufsize = 4096 * 1024
+            #rxbufsize = 4096 * 1024
+            rxbufsize = 4096
             ranks = [accl.Rank("127.0.0.1", 5500 + i, i, rxbufsize) for i in range(size)]
 
         logger.debug(f'Ranks: {ranks}')

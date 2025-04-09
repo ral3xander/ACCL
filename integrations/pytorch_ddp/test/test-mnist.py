@@ -12,6 +12,8 @@ import accl_process_group as accl
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 
+from mpi4py.MPI import COMM_WORLD as mpi
+
 import argparse
 import os
 import sys
@@ -92,7 +94,7 @@ def train(num_epochs, cnn, loaders):
             if True:
                 end_time = time.perf_counter()
                 measured_time = (end_time - start_time) * 1000000
-                print ('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}, Time(us): {}' 
+                logger.debug ('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}, Time(us): {}' 
                        .format(epoch + 1, num_epochs, i + 1, total_step, loss.item(), measured_time))
 
     end_time_train = time.perf_counter()
@@ -167,12 +169,11 @@ if __name__ == "__main__":
     os.environ['MASTER_ADDR'] = args.master_address
     os.environ['MASTER_PORT'] = args.master_port
 
-    dist.init_process_group("mpi")
-    rank = dist.get_rank()
-    size = dist.get_world_size()
-
-
-    rxbufsize = 4096 * 1024
+    rank = mpi.Get_rank()
+    size = mpi.Get_size()
+    
+    #rxbufsize = 4096 * 1024
+    rxbufsize = 4096
 
     if args.d:
         if not args.simulator:
@@ -205,11 +206,10 @@ if __name__ == "__main__":
             design = accl.ACCLDesign.cyt_rdma
     
 
-    
         # dist.init_process_group("mpi", rank=rank, world_size=size)
         
-        # accl.create_process_group(ranks, design, bufsize=rxbufsize, initialize=True, simulation=args.simulator)
-        # dist.init_process_group("ACCL", rank=rank, world_size=size)
+        accl.create_process_group(ranks, design, bufsize=rxbufsize, initialize=True, simulation=args.simulator)
+        dist.init_process_group("ACCL", rank=rank, world_size=size)
         
     device = 'cpu'
 
@@ -247,7 +247,7 @@ if __name__ == "__main__":
     num_epochs = 10
 
     print("starting training")
-
+    logger.debug("starting training")
     print(rank)
     print(size)
     

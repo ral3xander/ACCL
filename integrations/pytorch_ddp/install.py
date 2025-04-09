@@ -27,7 +27,7 @@ _CURRENT_PYTORCH = '2.1'
 CURRENT_PYTORCH_VERSION = f'v{_CURRENT_PYTORCH}'
 CURRENT_PYTORCH_BRANCH = f'release/{_CURRENT_PYTORCH}'
 
-CURRENT_ACCL_BRANCH = f'dev'
+CURRENT_ACCL_BRANCH = f'pytorch_ddp'
 
 root = Path(__file__).parent.resolve()
 accl_repo = root / 'accl'
@@ -77,7 +77,7 @@ def clone_pytorch():
 
 def clone_accl():
     print("Cloning ACCL...")
-    url = 'https://github.com/Xilinx/ACCL.git'
+    url = 'https://github.com/ral3xander/ACCL.git'
 
     subprocess.run(['git', 'clone', '--depth=1', '--recursive',
                     f'--branch={CURRENT_ACCL_BRANCH}',

@@ -47,7 +47,7 @@ include_dirs = [root / 'include',  driver_dir / 'xrt' / 'include',
                 root / 'accl' / 'test' / 'model' / 'zmq',
                 vnx_dir / 'include',
                 root / 'accl' / 'test' / 'refdesigns' / 'Coyote' / 'sw' / 'include',
-                '/pub/scratch/zhe/mpich/install/include',
+                '/mnt/scratch/zhe/mpich/install/include',
                 '/usr/include/jsoncpp']
 library_dirs = [driver_dir / 'xrt' / 'lib', xrt_dir / 'lib', '/mnt/scratch/zhe/mpich/install/lib/libmpicxx.so']
 libraries = ['accl', 'jsoncpp', 'zmq']

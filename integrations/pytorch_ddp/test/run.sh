@@ -104,7 +104,7 @@ rm -f $(pwd)/accl_log/accl_pg_*
 rm -rf $(pwd)/accl_log/profiler_log
 
 # C="mpirun -n $NUM_PROCESS $MPI_ARGS -outfile-pattern \"$(pwd)/accl_log/rank_%r_stdout\" $EXEC $ARG &"
-C="mpirun -n $NUM_PROCESS $MPI_ARGS -outfile-pattern \"$(pwd)/accl_log/rank_%r_stdout\" -errfile-pattern \"$(pwd)/accl_log/rank_%r_stderr\" $EXEC $ARG &"
+C="mpirun -n $NUM_PROCESS $MPI_ARGS  $EXEC $ARG &"
 # C="mpirun -n $NUM_PROCESS $MPI_ARGS $EXEC $ARG &"
 echo $C
 
