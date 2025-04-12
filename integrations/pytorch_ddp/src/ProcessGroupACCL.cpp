@@ -26,10 +26,14 @@
 #include <signal.h>
 #include <mpi.h>
 
+
+//Configure for GPU support
+#if defined(ACCL_PROCESS_GROUP_HIP_ENABLED) && defined(ACCL_PROCESS_GROUP_CUDA_ENABLED)
+#error Cannot compile Process Group with both HIP and CUDA support
+#endif 
 #ifdef ACCL_PROCESS_GROUP_HIP_ENABLED
 #include "hip/hip_runtime.h"
 #endif
-
 #ifdef ACCL_PROCESS_GROUP_CUDA_ENABLED
 #include <cuda_runtime.h>
 #endif
@@ -44,37 +48,15 @@ namespace py = pybind11;
 using namespace ACCL;
 
 namespace c10d {
-
+// Sidestepping functionality:
 // Toggles to run Collectives via OpenMPI instead(To sidestep any issues with them in ACCL)
 // The sidestep-code is copied from the ProcessGroupMPI
-// #define SCATTER_SIDESTEP
-// #define GATHER_SIDESTEP
-// #define ALLGATHER_SIDESTEP
-
+#define SCATTER_SIDESTEP
+#define GATHER_SIDESTEP
+#define ALLGATHER_SIDESTEP
 #define BROADCAST_SIDESTEP false
-// #define BROADCAST_SIDESTEP true
-
-    
 #define ALLREDUCE_SIDESTEP false
-// #define ALLREDUCE_SIDESTEP true
-
-// #define SIDESTEP_BCAST_WITH_ALLREDUCE
-    
-#define RDVZ_THRESHOLD 64
-
-// This is the maximal message size. larger sizes get segmented
-#define ACCL_MSG_SIZE 2097152
-
-// counts are rounded up to this number for stability reasons
-#define ROUND_NR 256
-
-// This is intended for debugging, you can refer to the name of the collective using this
-#define COLL_NAME UNNAMED
-
-#define x_MAKE_STRING(s) MAKE_STRING(s)
-#define MAKE_STRING(s) #s    
-
-// Used in sidestepping
+// Checks whether sidestepping suceeded
 #define MPI_CHECK(cmd)                                                   \
   do {                                                                   \
     int mpiStatus = cmd;                                                 \
@@ -85,8 +67,6 @@ namespace c10d {
       TORCH_CHECK(false, err);                                           \
     }                                                                    \
   } while (0)    
-
-// Used in sidestepping    
 // Op mapping
 std::map<ReduceOp::RedOpType, MPI_Op> mpiOp = {
     {ReduceOp::MIN, MPI_MIN},
@@ -94,7 +74,6 @@ std::map<ReduceOp::RedOpType, MPI_Op> mpiOp = {
     {ReduceOp::SUM, MPI_SUM},
     {ReduceOp::PRODUCT, MPI_PROD},
 };
-// Used in sidestepping
 // Type mapping
 std::map<at::ScalarType, MPI_Datatype> mpiDatatype = {
     {at::kByte, MPI_UNSIGNED_CHAR},
@@ -105,21 +84,32 @@ std::map<at::ScalarType, MPI_Datatype> mpiDatatype = {
     {at::kLong, MPI_LONG},
     {at::kShort, MPI_SHORT},
 };
-    
+
+
+#define RDVZ_THRESHOLD 64
+// This is the maximal message size. 2^21 = 2MB larger sizes get segmented
+#define ACCL_MSG_SIZE 2097152
+// counts are rounded up to this number for stability reasons
+#define ROUND_NR 256
+//Perform ceiling division
 #define CEIL_DIV(x, y) ((x) / (y) + ((x) % (y) != 0))
 
-#if defined(ACCL_PROCESS_GROUP_HIP_ENABLED) &&                                 \
-    defined(ACCL_PROCESS_GROUP_CUDA_ENABLED)
-#error Cannot compile Process Group with both HIP and CUDA support
-#endif // ACCL_PROCESS_GROUP_HIP_ENABLED && ACCL_PROCESS_GROUP_CUDA_ENABLED
-
+// This is intended for debugging, you can refer to the name of the collective using this
+#define COLL_NAME UNNAMED
+//Expand and stringify variable
+#define x_MAKE_STRING(s) MAKE_STRING(s)
+#define MAKE_STRING(s) #s    
+  
+//Condition
 #define DO_COND ((do_on_root && opts_root_rank == rank_) || (do_on_others && opts_root_rank != rank_))
 
+//Before ACCL collective call: Change buffer types from Torch-types to ACCL-types and log
 #define PRE_REQUEST(opname, tensor)					\
   in_buf->change_type(convert_datatype_from_torch(tensor.scalar_type())); \
   out_buf->change_type(convert_datatype_from_torch(tensor.scalar_type()));   \
   ACCL::debug("Performing " #opname " of " + std::to_string(tensor.numel()) + " items")
 
+  
 namespace {
 
 /* Alternative for std::format from C++20 in C++17.
@@ -302,7 +292,7 @@ inline bool hip_enabled() {
   return false;
 #endif
 }
-
+ 
 // Check if process is compiled with CUDA support
 inline bool cuda_enabled() {
 #ifdef ACCL_PROCESS_GROUP_CUDA_ENABLED
@@ -707,9 +697,9 @@ ProcessGroupACCL::broadcast(std::vector<at::Tensor> &tensors,
 	} else {
 	at::Tensor &tensor = (entry->src)[0];
         // Segment data if necessary
-        if (tensor.nbytes() > ACCL_MSG_SIZE) {
+        if (tensor.nbytes() > bufsize) {
 	  size_t non_zero_dim_count = tensor.numel() / tensor.size(0);
-          size_t n = ACCL_MSG_SIZE / tensor.itemsize() / non_zero_dim_count;
+          size_t n = bufsize / tensor.itemsize() / non_zero_dim_count;
 	  ACCL::debug("[Broadcast] Segmenting tensor of size " + std::to_string(tensor.nbytes()) + " into " + std::to_string(n * non_zero_dim_count) + "-sized elements ");
           for (size_t i = 0; i < tensor.size(0); i += n) {
 	    ACCL::debug("part " + std::to_string(i) + "!");
@@ -768,9 +758,9 @@ ProcessGroupACCL::allreduce(std::vector<at::Tensor> &tensors,
 	} else {
 	    auto tensor = (entry->src)[0];
 	    // Segment data if necessary
-	    if (tensor.nbytes() > (ACCL_MSG_SIZE)) {
+	    if (tensor.nbytes() > bufsize) {
 		size_t non_zero_dim_count = tensor.numel() / tensor.size(0);
-		size_t n = ACCL_MSG_SIZE / (tensor.itemsize() * non_zero_dim_count);
+		size_t n = bufsize / (tensor.itemsize() * non_zero_dim_count);
 		ACCL::debug("[Allreduce] Segmenting tensor of size " + std::to_string(tensor.nbytes()) + " into " + std::to_string(n * non_zero_dim_count) + "-sized elements ");
 		for (size_t i = 0; i < tensor.size(0); i += n) {
 		    // ACCL::debug("part " + std::to_string(i) + "!");
