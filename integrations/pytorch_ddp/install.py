@@ -30,7 +30,8 @@ CURRENT_PYTORCH_BRANCH = f'release/{_CURRENT_PYTORCH}'
 CURRENT_ACCL_BRANCH = f'pytorch_ddp'
 
 root = Path(__file__).parent.resolve()
-accl_repo = root / 'accl'
+accl_repo =Path('/pub/scratch/ralexander/ACCL')
+
 accl_driver_path = accl_repo / 'driver' / 'xrt'
 accl_driver = accl_driver_path / 'lib' / 'libaccl.so'
 torch_dir = root / 'torch'
@@ -48,10 +49,11 @@ def test_packages():
     }
 
     p = subprocess.run([python, '-m', 'pip', 'list'], capture_output=True)
-
+    
     for line in p.stdout.decode().splitlines():
         package = line.split(' ')[0]
         if package.lower() in packages:
+            print(package)
             packages[package] = True
 
     return packages
@@ -133,14 +135,14 @@ def install_accl_process_group(rocm: bool = False, cuda: bool = False, debug: bo
     env['USE_CUDA'] = '1' if cuda else '0'
     if debug:
         env['ACCL_DEBUG'] = '1'
-    subprocess.run([python, '-m', 'pip', '-v', 'install', '.'],
+    subprocess.run([python, '-m', 'pip', '-vvv', 'install', '.'],
                    env=env, cwd=root, check=True)
 
 
 def main(rocm: bool = False, cuda: bool = False,
          force_accl_process_group: bool = False, force_pytorch: bool = False, debug: bool = False):
     packages = test_packages()
-
+    print(packages)
     if force_pytorch and torch_dir.exists():
         rmtree(torch_dir)
 
@@ -151,7 +153,7 @@ def main(rocm: bool = False, cuda: bool = False,
         print("Currently installed version of PyTorch does not use CXX11 ABI, "
               "please rerun with the --force-pytorch flag enabled.")
         exit(1)
-
+    print(packages['accl-process-group'])
     if not packages['accl-process-group']:
         print("ACCL Process Group not found, installing...")
         install_accl_process_group(rocm, cuda, debug)

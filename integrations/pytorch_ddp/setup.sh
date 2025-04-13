@@ -20,4 +20,4 @@
 SCRIPT=$(readlink -f "$BASH_SOURCE")
 SCRIPTPATH=$(dirname "$SCRIPT")
 
-export LD_LIBRARY_PATH="${SCRIPTPATH}/accl/driver/xrt/lib:${LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="${SCRIPTPATH}/../../../ACCL/driver/xrt/lib:${LD_LIBRARY_PATH}"

@@ -25,6 +25,8 @@ from torch.utils import cpp_extension
 from pathlib import Path
 
 root = Path(__file__).parent.resolve()
+accl_repo =Path('/pub/scratch/ralexander/ACCL')
+xrt_dir = Path(os.environ['XILINX_XRT'])
 
 if not 'XILINX_XRT' in os.environ:
     print("ERROR: Xilinx XRT required for building ACCL process group")
@@ -35,18 +37,18 @@ cuda_enabled = 'USE_CUDA' in os.environ and int(os.environ['USE_CUDA']) != 0
 accl_debug_enabled = 'ACCL_DEBUG' in os.environ \
     and int(os.environ['ACCL_DEBUG']) != 0
 
-xrt_dir = Path(os.environ['XILINX_XRT'])
 
-driver_dir = root / 'accl' / 'driver'
+
+driver_dir = accl_repo / 'driver'
 accl_utils_dir = driver_dir / 'utils' / 'accl_network_utils'
-vnx_dir = root / 'accl' / 'test' / 'refdesigns' / 'xup_vitis_network_example' \
+vnx_dir = accl_repo / 'test' / 'refdesigns' / 'xup_vitis_network_example' \
     / 'xrt_host_api'
 
 include_dirs = [root / 'include',  driver_dir / 'xrt' / 'include',
                 accl_utils_dir / 'include', xrt_dir / 'include',
-                root / 'accl' / 'test' / 'model' / 'zmq',
+                accl_repo / 'test' / 'model' / 'zmq',
                 vnx_dir / 'include',
-                root / 'accl' / 'test' / 'refdesigns' / 'Coyote' / 'sw' / 'include',
+                accl_repo / 'test' / 'refdesigns' / 'Coyote' / 'sw' / 'include',
                 '/mnt/scratch/zhe/mpich/install/include',
                 '/usr/include/jsoncpp']
 library_dirs = [driver_dir / 'xrt' / 'lib', xrt_dir / 'lib', '/mnt/scratch/zhe/mpich/install/lib/libmpicxx.so']
