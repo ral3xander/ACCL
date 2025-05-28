@@ -10,8 +10,9 @@ if [[ -v ACCL_SCRIPT ]]; then
     SCRIPT_NAME="$ACCL_SCRIPT"
 else
     # SCRIPT_NAME="test-mnist.py -d True -n 2" # MNIST
+    SCRIPT_NAME="test-mnist.py"
     # SCRIPT_NAME="test-resnet50.py -d True -n 2" # MNIST
-    SCRIPT_NAME=test-generic.py
+    # SCRIPT_NAME=test-generic.py
     # SCRIPT_NAME="test-imagenet.py -d True"
     echo "Variable ACCL_SCRIPT not set. Assuming $SCRIPT_NAME"
 fi
@@ -20,7 +21,7 @@ fi
 mkdir -p "$(pwd)/accl_log"
 # BUILD_DIR=../build
 # point this to python venv, which has the relevant libraries installed
-VENV_ACTIVATE=$(pwd)/../venv/bin/activate
+VENV_ACTIVATE=$(pwd)/../envACCL/bin/activate
 SETUP_SH=$(pwd)/../setup.sh
 SCRIPT=$(pwd)/$SCRIPT_NAME
 HOST_FILE=./accl_log/host
@@ -50,6 +51,7 @@ if [[ $ACCL_SIM -eq 1 ]]; then
 
     MASTER_IP="localhost"
     MASTER_PORT="30505"
+    BACKEND="accl"
 
 else
     echo "Starting in hw mode. Make sure to run flow_u55c beforehand."
@@ -87,11 +89,15 @@ else
     echo "Master node set to: $MASTER_IP:$MASTER_PORT"
 
     # 09 and 10 have other interface names:
-    MPI_ARGS="-f $HOST_FILE --iface ens4f0"
+    MPI_ARGS="-f $HOST_FILE --iface enp65s0f0np0"
     # MPI_ARGS="-f $HOST_FILE --iface ens4"
+    if ! [[ -v BACKEND ]]; then
+        BACKEND="mpi"
+	echo "Assuming running with software mpi"
+    fi
 fi
 
-ARG="$ARG -c $ACCL_COMMS -i $HOST_FILE -f $FPGA_FILE -a $MASTER_IP -p $MASTER_PORT\""
+ARG="-d 1 $ARG -b $BACKEND -c $ACCL_COMMS -i $HOST_FILE -f $FPGA_FILE -a $MASTER_IP -p $MASTER_PORT\""
 
 #---------------Running it-------------
 
@@ -103,7 +109,8 @@ rm -f $(pwd)/accl_log/rank*
 rm -f $(pwd)/accl_log/accl_pg_*
 rm -rf $(pwd)/accl_log/profiler_log
 
-# C="mpirun -n $NUM_PROCESS $MPI_ARGS -outfile-pattern \"$(pwd)/accl_log/rank_%r_stdout\" $EXEC $ARG &"
+#C="mpirun -n $NUM_PROCESS $MPI_ARGS -outfile-pattern \"$(pwd)/accl_log/rank_%r_stdout\" $EXEC $ARG &"
+#C="mpirun -n $NUM_PROCESS $MPI_ARGS -outfile-pattern \"$(pwd)/accl_log/rank_%r_stdout\" -errfile-pattern \"$(pwd)/accl_log/rank_%r_stderr\" $EXEC $ARG &"
 C="mpirun -n $NUM_PROCESS $MPI_ARGS  $EXEC $ARG &"
 # C="mpirun -n $NUM_PROCESS $MPI_ARGS $EXEC $ARG &"
 echo $C

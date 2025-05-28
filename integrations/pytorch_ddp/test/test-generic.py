@@ -113,6 +113,222 @@ def test_broadcast(numel, testtype):
     else:
         logger.debug("Test broadcast finished!")
 
+def test_allreduce(numel, testtype):
+
+    global num_errors
+
+    shape = (numel,)
+
+    
+    if testtype == torch.int64 or testtype == torch.int32:
+        rand_torch = torch.randint(torch.iinfo(testtype).min//size, torch.iinfo(testtype).max//size,shape, dtype=testtype)
+    else:
+        rand_torch = torch.rand(shape, dtype=testtype)
+    
+    # for i in range(10):
+    if True:
+    
+        # shape = (320001,)
+        x = rand_torch.clone()
+
+        mpi.Barrier()            
+        
+        start_time = time.perf_counter()
+
+        
+        with torch.profiler.record_function("test_allreduce"):
+
+            dist.all_reduce(x, dist.ReduceOp.SUM)
+
+        end_time = time.perf_counter()
+        measured_time = (end_time - start_time) * 1000000
+        print(str(rank) + "_pytorch_Allreduce_" + str(x.nbytes) + " durationUs: " + str(measured_time), file=sys.stderr)
+        
+        logger.debug("Directly measured time us 1:" + str(measured_time))            
+        
+        mpi.Barrier()
+
+        try:
+            np.testing.assert_allclose(x, rand_torch * size)
+        except AssertionError as e:
+            num_errors = num_errors + 1
+            logger.debug("Test AllReduce failed")
+            logger.debug(str(e))
+        else:
+            logger.debug("Test AllReduce finished!")
+
+def test_reduce(numel):
+    global num_errors
+
+
+    shape = (numel,)
+    x = torch.ones(shape)
+
+    mpi.Barrier()            
+    start_time = time.perf_counter()
+    with torch.profiler.record_function("test_reduce"):
+
+        dist.reduce(x, 0, dist.ReduceOp.SUM)
+        mpi.Barrier()
+
+    end_time = time.perf_counter()
+    measured_time = (end_time - start_time) * 1000000
+    print(str(rank) + "_pytorch_Reduce_" + str(x.nbytes) + " durationUs: " + str(measured_time), file=sys.stderr)
+    
+    if rank == 0:
+        try:
+            np.testing.assert_allclose(x, torch.full(shape, float(size)))
+        except AssertionError as e:
+            num_errors = num_errors + 1
+            logger.debug("Test Reduce failed")
+            logger.debug(str(e))
+        else:
+            logger.debug("Test Reduce finished!")
+  
+def test_allgather(numel, testtype):
+    global num_errors
+
+    shape = (numel,)
+    if testtype == torch.int64 or testtype == torch.int32:
+        rand_torch = torch.randint(torch.iinfo(testtype).min, torch.iinfo(testtype).max,shape, dtype=testtype)
+    else:
+        rand_torch = torch.rand(shape, dtype=testtype)
+    x = rand_torch.clone()
+    y = [torch.full(shape, 0, dtype=testtype) for _ in range(size)]
+
+    mpi.Barrier()            
+    start_time = time.perf_counter()
+
+    print('len y:' + str(len(y)))
+    
+    with torch.profiler.record_function("test_allgather"):
+        dist.all_gather(y, x)
+
+    end_time = time.perf_counter()
+    measured_time = (end_time - start_time) * 1000000
+    print(str(rank) + "_pytorch_Allgather_" + str(x.nbytes) + " durationUs: " + str(measured_time), file=sys.stderr)
+        
+    mpi.Barrier()
+
+        
+    for i, c in enumerate(y):
+        try:
+            np.testing.assert_allclose(c, rand_torch)
+        except AssertionError as e:
+            num_errors = num_errors + 1
+            logger.debug("Test AllGather failed")
+            logger.debug(str(e))
+        else:
+            logger.debug("Test AllGather finished!")
+        
+def test_gather(numel):
+    global num_errors
+
+    shape = (numel,)
+    x = torch.full(shape, float(rank))
+
+    if rank == 0:
+        y = [torch.empty(shape) for _ in range(size)]
+    else:
+        y = None
+
+    mpi.Barrier()            
+    start_time = time.perf_counter()
+        
+    with torch.profiler.record_function("test_gather"):
+            
+        dist.gather(x, y, 0)
+
+    end_time = time.perf_counter()
+    measured_time = (end_time - start_time) * 1000000
+    print(str(rank) + "_pytorch_Gather_" + str(x.nbytes) + " durationUs: " + str(measured_time), file=sys.stderr)
+    
+    if rank == 0:
+        for i, c in enumerate(y):
+            try:
+                np.testing.assert_allclose(c, torch.full(shape, float(i)))
+            except AssertionError as e:
+                num_errors = num_errors + 1
+                logger.debug("Test Gather failed")
+                logger.debug(str(e))
+            else:
+                logger.debug("Test Gather finished!")
+
+def test_scatter(numel):
+    global num_errors
+
+    shape = (numel,)
+    if rank == 0:
+        x = [torch.full(shape, float(i+1)) for i in range(size)]
+    else:
+        x = None
+    y = torch.full(shape, float(0))
+
+    mpi.Barrier()            
+    start_time = time.perf_counter()
+    
+    with torch.profiler.record_function("test_scatter"):
+        
+        dist.scatter(y, x, 0)
+
+    end_time = time.perf_counter()
+    measured_time = (end_time - start_time) * 1000000
+    print(str(rank) + "_pytorch_Scatter_" + str(y.nbytes) + " durationUs: " + str(measured_time), file=sys.stderr)
+    
+    try:
+        np.testing.assert_allclose(y, torch.full(shape, float(rank+1)))
+    except AssertionError as e:
+        num_errors = num_errors + 1
+        logger.debug("Test Scatter failed")
+        logger.debug(str(e))
+    else:
+        logger.debug("Test Scatter finished!")
+
+def test_alltoall(numel):
+    global num_errors
+
+    # num_el = 26624
+    
+    shape = (numel,)
+
+    input = torch.arange(numel, dtype=torch.float) + float(rank) * numel
+
+    input_shaped = input.reshape(shape)
+
+    output = torch.ones(numel)
+
+    output_shaped = output.reshape(shape)
+
+    start_time = time.perf_counter()
+    
+    with torch.profiler.record_function("test_alltoall"):
+        
+        dist.all_to_all_single(output_shaped, input_shaped)
+
+    end_time = time.perf_counter()
+
+    measured_time = (end_time - start_time) * 1000000
+    
+    print(str(rank) + "_pytorch_AlltoAll_" + str(input.nbytes) + " durationUs: " + str(measured_time), file=sys.stderr)
+        
+    test = torch.zeros(numel)
+
+    section_size = int(numel/size)
+
+    for section in range(size):
+        for el in range(section_size):
+            test[section * section_size + el] = float(rank) * section_size + section * numel + el
+
+    test_shaped = test.reshape(shape)
+    try:
+        np.testing.assert_allclose(output_shaped, test_shaped)
+    except AssertionError as e:
+        num_errors = num_errors + 1
+        logger.debug("Test AlltoAll failed")
+        logger.debug(str(e))
+    else:
+        logger.debug("Test AlltoAll finished!")            
+
 def test_sendrcv(numel):
     global num_errors
 
@@ -165,228 +381,6 @@ def test_sendrcv(numel):
         logger.debug("Test Sendrcv finished!")
 
 
-def test_scatter(numel):
-    global num_errors
-
-    shape = (numel,)
-    if rank == 0:
-        x = [torch.full(shape, float(i+1)) for i in range(size)]
-    else:
-        x = None
-    y = torch.full(shape, float(0))
-
-    mpi.Barrier()            
-    start_time = time.perf_counter()
-    
-    with torch.profiler.record_function("test_scatter"):
-        
-        dist.scatter(y, x, 0)
-
-    end_time = time.perf_counter()
-    measured_time = (end_time - start_time) * 1000000
-    print(str(rank) + "_pytorch_Scatter_" + str(y.nbytes) + " durationUs: " + str(measured_time), file=sys.stderr)
-    
-    try:
-        np.testing.assert_allclose(y, torch.full(shape, float(rank+1)))
-    except AssertionError as e:
-        num_errors = num_errors + 1
-        logger.debug("Test Scatter failed")
-        logger.debug(str(e))
-    else:
-        logger.debug("Test Scatter finished!")
-    
-
-
-def test_gather(numel):
-    global num_errors
-
-    shape = (numel,)
-    x = torch.full(shape, float(rank))
-
-    if rank == 0:
-        y = [torch.empty(shape) for _ in range(size)]
-    else:
-        y = None
-
-    mpi.Barrier()            
-    start_time = time.perf_counter()
-        
-    with torch.profiler.record_function("test_gather"):
-            
-        dist.gather(x, y, 0)
-
-    end_time = time.perf_counter()
-    measured_time = (end_time - start_time) * 1000000
-    print(str(rank) + "_pytorch_Gather_" + str(x.nbytes) + " durationUs: " + str(measured_time), file=sys.stderr)
-    
-    if rank == 0:
-        for i, c in enumerate(y):
-            try:
-                np.testing.assert_allclose(c, torch.full(shape, float(i)))
-            except AssertionError as e:
-                num_errors = num_errors + 1
-                logger.debug("Test Gather failed")
-                logger.debug(str(e))
-            else:
-                logger.debug("Test Gather finished!")
-
-            
-def test_allgather(numel, testtype):
-    global num_errors
-
-    shape = (numel,)
-    if testtype == torch.int64 or testtype == torch.int32:
-        rand_torch = torch.randint(torch.iinfo(testtype).min, torch.iinfo(testtype).max,shape, dtype=testtype)
-    else:
-        rand_torch = torch.rand(shape, dtype=testtype)
-    x = rand_torch.clone()
-    y = [torch.full(shape, 0, dtype=testtype) for _ in range(size)]
-
-    mpi.Barrier()            
-    start_time = time.perf_counter()
-
-    print('len y:' + str(len(y)))
-    
-    with torch.profiler.record_function("test_allgather"):
-        dist.all_gather(y, x)
-
-    end_time = time.perf_counter()
-    measured_time = (end_time - start_time) * 1000000
-    print(str(rank) + "_pytorch_Allgather_" + str(x.nbytes) + " durationUs: " + str(measured_time), file=sys.stderr)
-        
-    mpi.Barrier()
-
-        
-    for i, c in enumerate(y):
-        try:
-            np.testing.assert_allclose(c, rand_torch)
-        except AssertionError as e:
-            num_errors = num_errors + 1
-            logger.debug("Test AllGather failed")
-            logger.debug(str(e))
-        else:
-            logger.debug("Test AllGather finished!")
-        
-
-
-def test_reduce(numel):
-    global num_errors
-
-
-    shape = (numel,)
-    x = torch.ones(shape)
-
-    mpi.Barrier()            
-    start_time = time.perf_counter()
-    with torch.profiler.record_function("test_reduce"):
-
-        dist.reduce(x, 0, dist.ReduceOp.SUM)
-        mpi.Barrier()
-
-    end_time = time.perf_counter()
-    measured_time = (end_time - start_time) * 1000000
-    print(str(rank) + "_pytorch_Reduce_" + str(x.nbytes) + " durationUs: " + str(measured_time), file=sys.stderr)
-    
-    if rank == 0:
-        try:
-            np.testing.assert_allclose(x, torch.full(shape, float(size)))
-        except AssertionError as e:
-            num_errors = num_errors + 1
-            logger.debug("Test Reduce failed")
-            logger.debug(str(e))
-        else:
-            logger.debug("Test Reduce finished!")
-        
-
-def test_allreduce(numel, testtype):
-
-    global num_errors
-
-    shape = (numel,)
-
-    
-    if testtype == torch.int64 or testtype == torch.int32:
-        rand_torch = torch.randint(torch.iinfo(testtype).min//size, torch.iinfo(testtype).max//size,shape, dtype=testtype)
-    else:
-        rand_torch = torch.rand(shape, dtype=testtype)
-    
-    # for i in range(10):
-    if True:
-    
-        # shape = (320001,)
-        x = rand_torch.clone()
-
-        mpi.Barrier()            
-        
-        start_time = time.perf_counter()
-
-        
-        with torch.profiler.record_function("test_allreduce"):
-
-            dist.all_reduce(x, dist.ReduceOp.SUM)
-
-        end_time = time.perf_counter()
-        measured_time = (end_time - start_time) * 1000000
-        print(str(rank) + "_pytorch_Allreduce_" + str(x.nbytes) + " durationUs: " + str(measured_time), file=sys.stderr)
-        
-        logger.debug("Directly measured time us 1:" + str(measured_time))            
-        
-        mpi.Barrier()
-
-        try:
-            np.testing.assert_allclose(x, rand_torch * size)
-        except AssertionError as e:
-            num_errors = num_errors + 1
-            logger.debug("Test AllReduce failed")
-            logger.debug(str(e))
-        else:
-            logger.debug("Test AllReduce finished!")
-        
-    
-def test_alltoall(numel):
-    global num_errors
-
-    # num_el = 26624
-    
-    shape = (numel,)
-
-    input = torch.arange(numel, dtype=torch.float) + float(rank) * numel
-
-    input_shaped = input.reshape(shape)
-
-    output = torch.ones(numel)
-
-    output_shaped = output.reshape(shape)
-
-    start_time = time.perf_counter()
-    
-    with torch.profiler.record_function("test_alltoall"):
-        
-        dist.all_to_all_single(output_shaped, input_shaped)
-
-    end_time = time.perf_counter()
-
-    measured_time = (end_time - start_time) * 1000000
-    
-    print(str(rank) + "_pytorch_AlltoAll_" + str(input.nbytes) + " durationUs: " + str(measured_time), file=sys.stderr)
-        
-    test = torch.zeros(numel)
-
-    section_size = int(numel/size)
-
-    for section in range(size):
-        for el in range(section_size):
-            test[section * section_size + el] = float(rank) * section_size + section * numel + el
-
-    test_shaped = test.reshape(shape)
-    try:
-        np.testing.assert_allclose(output_shaped, test_shaped)
-    except AssertionError as e:
-        num_errors = num_errors + 1
-        logger.debug("Test AlltoAll failed")
-        logger.debug(str(e))
-    else:
-        logger.debug("Test AlltoAll finished!")
         
 class ToyModel(nn.Module):
     def __init__(self):
@@ -421,7 +415,6 @@ class MyTrainDataset(Dataset):
     def __getitem__(self, index):
         return self.data[index]
     
-
 def prepare_dataloader(dataset: Dataset, batch_size: int):
     return DataLoader(
         dataset,
@@ -502,7 +495,7 @@ Master address: {ma}:{mp}, Start port for FPGA: {start_port}")
             ranks = [accl.Rank(a, start_port + i, 0, rxbufsize) for i, a in enumerate(fpga_ips)]
     else:
         # Somehow the simulator gets stuck if I use the same rxbufsize
-        rxbufsize = 4096 * 1024
+        rxbufsize = 4096
         ranks = [accl.Rank("127.0.0.1", 5500 + i, i, rxbufsize) for i in range(size)]
 
     logger.debug(f'Ranks: {ranks}')
@@ -525,15 +518,11 @@ Master address: {ma}:{mp}, Start port for FPGA: {start_port}")
 
     # dist.init_process_group("mpi", rank=rank, world_size=size)
 
-    
-    accl.create_process_group(ranks, design, bufsize=rxbufsize, initialize=True, simulation=simulator)
+    accl.create_process_group(ranks, design, bufsize= 2048 , nbufs=1, initialize=True, simulation=simulator)
     dist.init_process_group("ACCL", rank=rank, world_size=size)
     
     global num_errors
     num_errors = 0
-
-    test_allreduce(256, torch.float32)
-    test_broadcast(256, torch.float32)
 
     schedule = torch.profiler.schedule(
         wait=1,
@@ -544,19 +533,21 @@ Master address: {ma}:{mp}, Start port for FPGA: {start_port}")
     # with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], profile_memory=True, schedule=schedule, record_shapes=True) as prof:
 
     # generic testing
-    for n in range(9,20):
-        for i in range(40):
-            num = 2**n * 3
-            test_broadcast(num, torch.float32)
-            test_allreduce(num, torch.float32)
-            test_alltoall(num)
-            test_allgather(num, torch.float32)
-            # test_sendrcv(num)
-            # test_scatter(num)
-            test_gather(num)
-            test_reduce(num)
-            
-            # prof.step()
+    num = 16
+    for n in range(10):
+        test_allreduce(num, torch.float32)
+    for n in range(0):
+        
+        test_broadcast(num, torch.float32)
+        test_allreduce(num, torch.float32)
+        test_reduce(num)
+        test_allgather(num, torch.float32)
+        test_gather(num)
+        test_scatter(num)
+        test_alltoall(num)
+        test_sendrcv(num)
+        
+    # prof.step()
 
     # to simulate resnet behaviour(check to make sure it's the same as in your resnet config)
     # for i in range(10):
