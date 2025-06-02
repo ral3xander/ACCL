@@ -30,7 +30,7 @@ namespace ACCL {
 ACCL::ACCL(xrt::device &device, xrt::ip &cclo_ip, xrt::kernel &hostctrl_ip,
            int devicemem, const std::vector<int> &rxbufmem,
            const arithConfigMap &arith_config)
-    : arith_config(arith_config), sim_mode(false),
+    : arith_config(arith_config), sim_mode(false), coyote_mode(false),
       _devicemem(devicemem), rxbufmem(rxbufmem) {
   cclo = new XRTDevice(cclo_ip, hostctrl_ip, device);
 }
@@ -38,14 +38,14 @@ ACCL::ACCL(xrt::device &device, xrt::ip &cclo_ip, xrt::kernel &hostctrl_ip,
 // Simulation constructor
 ACCL::ACCL(unsigned int sim_start_port, unsigned int local_rank,
            const arithConfigMap &arith_config)
-    : arith_config(arith_config), sim_mode(true),
+    : arith_config(arith_config), sim_mode(true), coyote_mode(false), 
       _devicemem(0), rxbufmem({}) {
   cclo = new SimDevice(sim_start_port, local_rank);
 }
 
 // constructor for coyote fpga device
 ACCL::ACCL(CoyoteDevice *dev, const arithConfigMap &arith_config)
-  : arith_config(arith_config), sim_mode(false),
+  : arith_config(arith_config), sim_mode(false), coyote_mode(true),
     _devicemem(0), rxbufmem(0), cclo(dev) {}
 
 // destructor
@@ -125,7 +125,7 @@ ACCLRequest *ACCL::send(BaseBuffer &srcbuf, unsigned int count,
                         std::vector<ACCLRequest *> waitfor) {
   CCLO::Options options{};
 
-  if (from_fpga == false) {
+  if (from_fpga == false && !coyote_mode) {
     srcbuf.sync_to_device();
   }
 
@@ -182,7 +182,7 @@ ACCLRequest *ACCL::stream_put(BaseBuffer &srcbuf, unsigned int count,
     throw std::invalid_argument("Stream ID must < 247");
   }
 
-  if (from_fpga == false) {
+  if (from_fpga == false && !coyote_mode) {
     srcbuf.sync_to_device();
   }
   options.scenario = operation::send;
@@ -257,7 +257,7 @@ ACCLRequest *ACCL::recv(BaseBuffer &dstbuf, unsigned int count,
 
   if (!run_async) {
     wait(handle);
-    if (to_fpga == false) {
+    if (to_fpga == false && !coyote_mode) {
       dstbuf.sync_from_device();
     }
     check_return_value("recv", handle);
@@ -295,15 +295,19 @@ ACCLRequest *ACCL::copy(BaseBuffer *srcbuf, BaseBuffer *dstbuf, unsigned int cou
                         bool from_fpga, bool to_fpga, streamFlags stream_flags,
                         dataType data_type, bool run_async,
                         std::vector<ACCLRequest *> waitfor) {
-  CCLO::Options options{};
 
+  
+  CCLO::Options options{};
+  //for(int i = 0; i < count; i++){
+    //std::cout <<"Starting copy call" << (*srcbuf)[i] << " " << (*dstbuf)[i] << std::endl;
+  //}
   if (to_fpga == false && run_async == true) {
     std::cerr << "ACCL: async run returns data on FPGA, user must "
                  "sync_from_device() after waiting"
               << std::endl;
   }
 
-  if (from_fpga == false) {
+  if (from_fpga == false && !coyote_mode) {
     srcbuf->sync_to_device();
   }
 
@@ -319,7 +323,7 @@ ACCLRequest *ACCL::copy(BaseBuffer *srcbuf, BaseBuffer *dstbuf, unsigned int cou
 
   if (!run_async) {
     wait(handle);
-    if (to_fpga == false) {
+    if (to_fpga == false && !coyote_mode) {
       dstbuf->sync_from_device();
     }
     check_return_value("copy", handle);
@@ -371,11 +375,11 @@ ACCLRequest *ACCL::combine(unsigned int count, reduceFunction function,
               << std::endl;
   }
 
-  if (val1_from_fpga == false) {
+  if (val1_from_fpga == false && !coyote_mode) {
     val1.sync_to_device();
   }
 
-  if (val2_from_fpga == false) {
+  if (val2_from_fpga == false && !coyote_mode) {
     val2.sync_to_device();
   }
 
@@ -390,7 +394,7 @@ ACCLRequest *ACCL::combine(unsigned int count, reduceFunction function,
 
   if (!run_async) {
     wait(handle);
-    if (to_fpga == false) {
+    if (to_fpga == false && !coyote_mode) {
       result.sync_from_device();
     }
     check_return_value("combine", handle);
@@ -420,7 +424,7 @@ ACCLRequest *ACCL::bcast(BaseBuffer &buf, unsigned int count,
     return nullptr;
   }
 
-  if (from_fpga == false && is_root == true) {
+  if (from_fpga == false && is_root == true && !coyote_mode) {
     buf.sync_to_device();
   }
 
@@ -436,7 +440,7 @@ ACCLRequest *ACCL::bcast(BaseBuffer &buf, unsigned int count,
 
   if (!run_async) {
     wait(handle);
-    if (to_fpga == false) {
+    if (to_fpga == false && !coyote_mode) {
       buf.sync_from_device();
     }
     check_return_value("bcast", handle);
@@ -467,7 +471,7 @@ ACCLRequest *ACCL::scatter(BaseBuffer &sendbuf,
     return nullptr;
   }
 
-  if (from_fpga == false && is_root == true) {
+  if (from_fpga == false && is_root == true && !coyote_mode) {
     auto slice = sendbuf.slice(0, count * communicator.get_ranks()->size());
     slice->sync_to_device();
   }
@@ -484,7 +488,7 @@ ACCLRequest *ACCL::scatter(BaseBuffer &sendbuf,
 
   if (!run_async) {
     wait(handle);
-    if (to_fpga == false) {
+    if (to_fpga == false && !coyote_mode) {
       auto slice = recvbuf.slice(0, count);
       slice->sync_from_device();
     }
@@ -525,7 +529,7 @@ ACCLRequest *ACCL::gather(BaseBuffer &sendbuf,
               << std::endl;
   }
 
-  if (from_fpga == false) {
+  if (from_fpga == false && !coyote_mode) {
     auto slice = sendbuf.slice(0, count);
     slice->sync_to_device();
   }
@@ -542,7 +546,7 @@ ACCLRequest *ACCL::gather(BaseBuffer &sendbuf,
 
   if (!run_async) {
     wait(handle);
-    if (to_fpga == false && is_root == true) {
+    if (to_fpga == false && is_root == true && !coyote_mode) {
       auto slice = recvbuf.slice(0, count * communicator.get_ranks()->size());
       slice->sync_from_device();
     }
@@ -581,7 +585,7 @@ ACCLRequest *ACCL::allgather(BaseBuffer &sendbuf,
               << std::endl;
   }
 
-  if (from_fpga == false) {
+  if (from_fpga == false && !coyote_mode) {
     auto slice = sendbuf.slice(0, count);
     slice->sync_to_device();
   }
@@ -598,7 +602,7 @@ ACCLRequest *ACCL::allgather(BaseBuffer &sendbuf,
 
   if (!run_async) {
     wait(handle);
-    if (to_fpga == false) {
+    if (to_fpga == false && !coyote_mode) {
       auto slice = recvbuf.slice(0, count * communicator.get_ranks()->size());
       slice->sync_from_device();
     }
@@ -630,7 +634,7 @@ ACCLRequest *ACCL::reduce(BaseBuffer &sendbuf,
     return nullptr;
   }
 
-  if (from_fpga == false) {
+  if (from_fpga == false && !coyote_mode) {
     auto slice = sendbuf.slice(0, count);
     slice->sync_to_device();
   }
@@ -648,7 +652,7 @@ ACCLRequest *ACCL::reduce(BaseBuffer &sendbuf,
 
   if (!run_async) {
     wait(handle);
-    if (to_fpga == false && is_root == true) {
+    if (to_fpga == false && is_root == true && !coyote_mode) {
       auto slice = recvbuf.slice(0, count);
       slice->sync_from_device();
     }
@@ -694,7 +698,7 @@ ACCLRequest *ACCL::reduce(dataType src_data_type,
 
   if (!run_async) {
     wait(handle);
-    if (to_fpga == false && is_root == true) {
+    if (to_fpga == false && is_root == true && !coyote_mode) {
       auto slice = recvbuf.slice(0, count);
       slice->sync_from_device();
     }
@@ -718,7 +722,7 @@ ACCLRequest *ACCL::reduce(BaseBuffer &sendbuf, dataType dst_data_type,
     return nullptr;
   }
 
-  if (from_fpga == false) {
+  if (from_fpga == false && !coyote_mode) {
     auto slice = sendbuf.slice(0, count);
     slice->sync_to_device();
   }
@@ -783,7 +787,7 @@ ACCLRequest *ACCL::allreduce(BaseBuffer &sendbuf,
                              bool from_fpga, bool to_fpga, dataType compress_dtype,
                              bool run_async, std::vector<ACCLRequest *> waitfor) {
   CCLO::Options options{};
-
+              
   const Communicator &communicator = communicators[comm_id];
 
   if (to_fpga == false && run_async == true) {
@@ -797,7 +801,7 @@ ACCLRequest *ACCL::allreduce(BaseBuffer &sendbuf,
     return nullptr;
   }
 
-  if (from_fpga == false) {
+  if (from_fpga == false && !coyote_mode) {
     auto slice = sendbuf.slice(0, count);
     slice->sync_to_device();
   }
@@ -815,7 +819,7 @@ ACCLRequest *ACCL::allreduce(BaseBuffer &sendbuf,
 
   if (!run_async) {
     wait(handle);
-    if (to_fpga == false) {
+    if (to_fpga == false && !coyote_mode) {
       auto slice = recvbuf.slice(0, count);
       slice->sync_from_device();
     }
@@ -846,7 +850,7 @@ ACCLRequest *ACCL::reduce_scatter(BaseBuffer &sendbuf,
     return nullptr;
   }
 
-  if (from_fpga == false) {
+  if (from_fpga == false && !coyote_mode) {
     auto slice = sendbuf.slice(0, count * communicator.get_ranks()->size());
     slice->sync_to_device();
   }
@@ -863,7 +867,7 @@ ACCLRequest *ACCL::reduce_scatter(BaseBuffer &sendbuf,
 
   if (!run_async) {
     wait(handle);
-    if (to_fpga == false) {
+    if (to_fpga == false && !coyote_mode) {
       auto slice = recvbuf.slice(0, count);
       slice->sync_from_device();
     }
@@ -900,7 +904,7 @@ ACCLRequest *ACCL::alltoall(BaseBuffer &sendbuf, BaseBuffer &recvbuf, unsigned i
               << std::endl;
   }
 
-  if (from_fpga == false) {
+  if (from_fpga == false && !coyote_mode) {
     auto slice = sendbuf.slice(0, count * communicator.get_ranks()->size());
     slice->sync_to_device();
   }
@@ -917,7 +921,7 @@ ACCLRequest *ACCL::alltoall(BaseBuffer &sendbuf, BaseBuffer &recvbuf, unsigned i
 
   if (!run_async) {
     wait(handle);
-    if (to_fpga == false) {
+    if (to_fpga == false && !coyote_mode) {
       auto slice = recvbuf.slice(0, count * communicator.get_ranks()->size());
       slice->sync_from_device();
     }
@@ -1026,7 +1030,9 @@ std::string ACCL::dump_eager_rx_buffers(size_t n_egr_rx_bufs, bool dump_data) {
            << " \t seq: " << seq << " \t src: " << rxsrc;
 
     if(dump_data) {
-      eager_rx_buffers[i]->sync_from_device();
+      if(!coyote_mode){
+         eager_rx_buffers[i]->sync_from_device();
+      }
 
       stream << " \t data: " << std::hex << "[";
       for (size_t j = 0; j < eager_rx_buffers[i]->size(); ++j) {
@@ -1184,7 +1190,10 @@ void ACCL::setup_rendezvous_spare_buffers(addr_t rndzv_spare_buf_size, const std
     } else if(cclo->get_device_type() == CCLO::coyote_device){
       buf = new CoyoteBuffer<int8_t>(max_rndzv_msg_size, dataType::int8, static_cast<CoyoteDevice *>(cclo));
     }
-    buf->sync_to_device();
+    if(!coyote_mode) {
+       buf->sync_to_device();
+    }
+   
     utility_spares.emplace_back(buf);
   }
   cclo->write(CCLO_ADDR::SPARE1_OFFSET, utility_spares.at(0)->address() & 0xffffffff);

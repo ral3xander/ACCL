@@ -1089,6 +1089,8 @@ private:
   bool config_rdy{};
   // flag to indicate whether we're simulating
   const bool sim_mode;
+  // flag to indicated wheter we use a Coyote Device
+  const bool coyote_mode;
   // memory banks for hardware
   const int _devicemem;
   const std::vector<int> rxbufmem;
