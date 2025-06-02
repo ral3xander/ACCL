@@ -162,8 +162,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("-n", type=int, default=1)
-    parser.add_argument("-d", type=bool, default=None)
+    parser.add_argument('-n', type=int, default=1)
+    parser.add_argument('-d', type=bool, default=None)
+    parser.add_argument('-m', '--model', type=str, choices=['resnet18', 'resnet34', 'resnet50'], default='resnet18',help='Choose the ResNet model architecture')
 
 
     parser.add_argument('-s', '--simulator', action='store_true',

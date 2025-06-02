@@ -10,7 +10,7 @@ if [[ -v ACCL_SCRIPT ]]; then
     SCRIPT_NAME="$ACCL_SCRIPT"
 else
     # SCRIPT_NAME="test-mnist.py -d True -n 2" # MNIST
-    SCRIPT_NAME="test-mnist.py"
+    SCRIPT_NAME="test-generic.py"
     # SCRIPT_NAME="test-resnet50.py -d True -n 2" # MNIST
     # SCRIPT_NAME=test-generic.py
     # SCRIPT_NAME="test-imagenet.py -d True"

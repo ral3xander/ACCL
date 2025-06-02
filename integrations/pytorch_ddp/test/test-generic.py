@@ -534,8 +534,10 @@ Master address: {ma}:{mp}, Start port for FPGA: {start_port}")
 
     # generic testing
     num = 16
-    for n in range(10):
+    for n in range(1):
         test_allreduce(num, torch.float32)
+        test_broadcast(num, torch.float32)
+        test_sendrcv(num)
     for n in range(0):
         
         test_broadcast(num, torch.float32)
@@ -556,6 +558,7 @@ Master address: {ma}:{mp}, Start port for FPGA: {start_port}")
         test_allreduce(256, torch.int32)
         test_allreduce(256, torch.int64)
         test_broadcast(256, torch.float32)
+        
         for i in range(5):
             test_allreduce(1000, torch.float32)
             test_allreduce(2052096, torch.float32)
