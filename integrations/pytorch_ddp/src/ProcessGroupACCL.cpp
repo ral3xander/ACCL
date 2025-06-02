@@ -18,6 +18,7 @@
 #include "ProcessGroupACCL.hpp"
 
 #include <iostream>
+#include <sstream>
 #include <limits>
 #include <map>
 #include <memory>
@@ -111,6 +112,38 @@ std::map<at::ScalarType, MPI_Datatype> mpiDatatype = {
 
   
 namespace {
+  void print_state(const std::string& label,
+                 const at::Tensor& in_tensor,
+                 const std::unique_ptr<ACCL::Buffer<float>>& in_buf,
+                 const std::unique_ptr<ACCL::Buffer<float>>& out_buf,
+                 size_t max_elems = 20) {
+  std::stringstream ss;
+  ss << label << "\n";
+
+  // Print input tensor
+  ss << "in_tensor (first " << max_elems << "): "
+     << in_tensor.flatten().slice(0, 0, max_elems) << "\n";
+
+  // Print in_buf
+  ss << "in_buf (first " << max_elems << "): [";
+  size_t in_len = in_buf->length();
+  for (size_t i = 0; i < std::min(max_elems, in_len); ++i) {
+    ss << (*in_buf)[i];
+    if (i != std::min(max_elems, in_len) - 1) ss << ", ";
+  }
+  ss << "]\n";
+
+  // Print out_buf
+  ss << "out_buf (first " << max_elems << "): [";
+  size_t out_len = out_buf->length();
+  for (size_t i = 0; i < std::min(max_elems, out_len); ++i) {
+    ss << (*out_buf)[i];
+    if (i != std::min(max_elems, out_len) - 1) ss << ", ";
+  }
+  ss << "]";
+
+  ACCL::debug(ss.str());
+}
 
 /* Alternative for std::format from C++20 in C++17.
    Source: https://stackoverflow.com/a/26221725 */
@@ -381,7 +414,7 @@ void accl_sa_handler(int)
 	exit(EXIT_FAILURE);
 }
 
-void ProcessGroupACCL::init_input_tensor(at::Tensor &tensor, std::unique_ptr<ACCL::BaseBuffer> &data, bool do_on_root, bool do_on_others, int opts_root_rank) {
+void ProcessGroupACCL::init_input_tensor(at::Tensor &tensor, std::unique_ptr<ACCL::Buffer<float>> &data, bool do_on_root, bool do_on_others, int opts_root_rank) {
   if DO_COND {
 	std::memcpy(data->byte_array(), tensor.data_ptr(), tensor.numel() * tensor.element_size());
 	if (!coyote_enabled) {
@@ -390,7 +423,7 @@ void ProcessGroupACCL::init_input_tensor(at::Tensor &tensor, std::unique_ptr<ACC
     }
 }
 
-void ProcessGroupACCL::init_input_data_vec(std::vector<at::Tensor> &tensor_vec, std::unique_ptr<ACCL::BaseBuffer> &data, const at::TensorOptions &options, bool do_on_root, bool do_on_others, int opts_root_rank) {
+void ProcessGroupACCL::init_input_data_vec(std::vector<at::Tensor> &tensor_vec, std::unique_ptr<ACCL::Buffer<float>> &data, const at::TensorOptions &options, bool do_on_root, bool do_on_others, int opts_root_rank) {
   if DO_COND {
     int64_t tens_size = static_cast<size_t>(tensor_vec[0].numel());
     int64_t total_size = tens_size * static_cast<size_t>(size_);
@@ -404,7 +437,7 @@ void ProcessGroupACCL::init_input_data_vec(std::vector<at::Tensor> &tensor_vec, 
   }
 }  
 
-void ProcessGroupACCL::copy_back_tensor(at::Tensor tensor_original, std::unique_ptr<ACCL::BaseBuffer> &data, bool do_on_root, bool do_on_others, int opts_root_rank){
+void ProcessGroupACCL::copy_back_tensor(at::Tensor tensor_original, std::unique_ptr<ACCL::Buffer<float>> &data, bool do_on_root, bool do_on_others, int opts_root_rank){
   if DO_COND {
       if (!coyote_enabled) {
 	data->sync_from_device();
@@ -413,7 +446,7 @@ void ProcessGroupACCL::copy_back_tensor(at::Tensor tensor_original, std::unique_
   }
 }
 
-void ProcessGroupACCL::copy_back_tensorvec(const std::vector<at::Tensor> &dsttensorvec, std::unique_ptr<ACCL::BaseBuffer> &data, at::Tensor &dsttensor, int numel, int offset, bool do_on_root, bool do_on_others, int opts_root_rank){
+void ProcessGroupACCL::copy_back_tensorvec(const std::vector<at::Tensor> &dsttensorvec, std::unique_ptr<ACCL::Buffer<float>> &data, at::Tensor &dsttensor, int numel, int offset, bool do_on_root, bool do_on_others, int opts_root_rank){
   if DO_COND {
     if (!coyote_enabled) {
       data->sync_from_device();
@@ -436,11 +469,11 @@ ProcessGroupACCL::ProcessGroupACCL(
     int device_index, int nbufs, uint64_t bufsize, bool rsfec)
     : ProcessGroup(rank, size), store_(store), stop_(false),
       device_index_(device_index), nbufs_(nbufs), bufsize_(bufsize),
-      rsfec_(rsfec), simulator_(simulator), xclbin_(xclbin),
+      rsfec_(rsfec), simulator_(false), xclbin_(xclbin),
       bufsize(bufsize), p2p_enabled(p2p_enabled),
-      coyote_enabled(
-        design == accl_network_utils::acclDesign::CYT_RDMA
-        || design == accl_network_utils::acclDesign::CYT_TCP),
+      coyote_enabled(true
+        /*design == accl_network_utils::acclDesign::CYT_RDMA
+        || design == accl_network_utils::acclDesign::CYT_TCP*/),
       compression(compression), initialized(false) {
 
   ACCL::debug("Process Group constructor called");
@@ -466,11 +499,11 @@ ProcessGroupACCL::ProcessGroupACCL(
     if (coyote_enabled) {
       if (design_ == accl_network_utils::acclDesign::CYT_TCP) {
         cyt_device = new ACCL::CoyoteDevice();
-	accl_network_utils::configure_cyt_tcp(ranks_, rank_, cyt_device);
+	      accl_network_utils::configure_cyt_tcp(ranks_, rank_, cyt_device);
       } else if (design_ == accl_network_utils::acclDesign::CYT_RDMA) {
-	ACCL::debug("Creating CoyoteDevice");
+	      ACCL::debug("Creating CoyoteRDMADevice");
         cyt_device = new ACCL::CoyoteDevice(size_);
-	accl_network_utils::configure_cyt_rdma(ranks_, rank_, cyt_device);
+	      accl_network_utils::configure_cyt_rdma(ranks_, rank_, cyt_device);
       } else {
         throw std::runtime_error("Undefined ACCL design");
       }
@@ -507,7 +540,7 @@ void ProcessGroupACCL::initialize() {
     throw std::runtime_error("Already initialized process group");
   }
 
-  if (coyote_enabled && !simulator_) {
+  if (true) {
 
     accl = std::make_unique<ACCL::ACCL>(cyt_device);
     global_accl = &accl;
@@ -515,7 +548,7 @@ void ProcessGroupACCL::initialize() {
     // Rendezvous protocol for now
     int segsize = 4096 * 1024;
 
-    
+    std::cerr << "initializing coyote accl" << std::endl;
     accl.get()->initialize(ranks_, rank_, 16, 1024, RDVZ_THRESHOLD, 4096*1024);
     
     ACCL::debug(std::string("[ACCL coyote] communicator: ") + accl->dump_communicator());
@@ -653,7 +686,7 @@ void ProcessGroupACCL::run_broadcast(at::Tensor in_tensor,
 
   PRE_REQUEST(Broadcast, in_tensor);
   
-  auto req = accl->allreduce(*in_buf, *out_buf, imaginary_count, ACCL::reduceFunction::SUM);      
+  auto req = accl->allreduce(*in_buf, *out_buf, imaginary_count,  ACCL::reduceFunction::SUM, GLOBAL_COMM, false, false);      
 
   copy_back_tensor(in_tensor, out_buf, true, true);
   
@@ -717,23 +750,28 @@ ProcessGroupACCL::broadcast(std::vector<at::Tensor> &tensors,
                  c10::optional<std::vector<at::Tensor>>(tensors));
 }
 
+
 #undef COLL_NAME
 #define COLL_NAME Allreduce
 
 void ProcessGroupACCL::run_allreduce(at::Tensor in_tensor,
                                      const AllreduceOptions &opts) {
-
+  
+  //print_state("BEFORE INIT_INPUT_TENSOR", in_tensor, in_buf, out_buf);
   init_input_tensor(in_tensor, in_buf, true, true);
-
+  //print_state("AFTER INIT_INPUT_TENSOR", in_tensor, in_buf, out_buf);
+                                      
   // Reserve device
   c10::DeviceGuard guard(in_tensor.device());
   std::unique_lock<std::mutex> globalLock(pgGlobalMutex_);
   PRE_REQUEST(Allreduce,in_tensor); 
   int rounded_count = (in_tensor.numel() + ROUND_NR) & ~ROUND_NR;
   
-  auto req = accl->allreduce(*in_buf, *out_buf, rounded_count, acclOp.at(opts.reduceOp));      
-
+  print_state("BEFORE ACCL_ALLREDUCE", in_tensor, in_buf, out_buf);
+  auto req = accl->allreduce(*in_buf, *out_buf, rounded_count, acclOp.at(opts.reduceOp));     
+  print_state("AFTER ACCL_ALLREDUCE", in_tensor, in_buf, out_buf); 
   copy_back_tensor(in_tensor, out_buf, true, true);
+  //print_state("AFTER COPY_BACK_TENSOR", in_tensor, in_buf, out_buf);
 }
 
 c10::intrusive_ptr<Work>
@@ -759,18 +797,19 @@ ProcessGroupACCL::allreduce(std::vector<at::Tensor> &tensors,
 	    auto tensor = (entry->src)[0];
 	    // Segment data if necessary
 	    if (tensor.nbytes() > bufsize) {
-		size_t non_zero_dim_count = tensor.numel() / tensor.size(0);
-		size_t n = bufsize / (tensor.itemsize() * non_zero_dim_count);
-		ACCL::debug("[Allreduce] Segmenting tensor of size " + std::to_string(tensor.nbytes()) + " into " + std::to_string(n * non_zero_dim_count) + "-sized elements ");
-		for (size_t i = 0; i < tensor.size(0); i += n) {
+		    size_t non_zero_dim_count = tensor.numel() / tensor.size(0);
+		    size_t n = bufsize / (tensor.itemsize() * non_zero_dim_count);
+		    ACCL::debug("[Allreduce] Segmenting tensor of size " + std::to_string(tensor.nbytes()) + " into " + std::to_string(n * non_zero_dim_count) + "-sized elements ");
+		    for (size_t i = 0; i < tensor.size(0); i += n) {
 		    // ACCL::debug("part " + std::to_string(i) + "!");
 		    size_t end = std::min(n, static_cast<size_t>(tensor.size(0)) - i);
 		    run_allreduce(tensor.narrow(0, i, end), opts);
-		}
+		    }
 	    } else {
-		run_allreduce(tensor, opts);
+        ACCL::debug("call run_allreduce, no segmentation");
+		    run_allreduce(tensor, opts);
 	    }
-      }
+  }
       };
   auto entry =
       std::make_unique<WorkEntry>(&tensors, &tensors, std::move(runFunc));
@@ -1446,4 +1485,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                     &ProcessGroupACCL::set_compression);
 }
 
+
 } // namespace c10d
+
