@@ -297,15 +297,15 @@ protected:
   static void initACCLOnce();
   static void acclExit();
   
-  void init_input_tensor(at::Tensor &tensor, std::unique_ptr<ACCL::BaseBuffer> &data, bool do_on_root, bool do_on_others, int opts_root_rank = 0);
+  void init_input_tensor(at::Tensor &tensor, std::unique_ptr<ACCL::Buffer<float>> &data, bool do_on_root, bool do_on_others, int opts_root_rank = 0);
   
   void init_input_tensor_new(at::Tensor &tensor, ACCL::BaseBuffer *data, bool do_on_root, bool do_on_others, int opts_root_rank = 0);
   
-  void init_input_data_vec(std::vector<at::Tensor> &tensor_vec, std::unique_ptr<ACCL::BaseBuffer> &data, const at::TensorOptions &options, bool do_on_root, bool do_on_others, int opts_root_rank = 0);
+  void init_input_data_vec(std::vector<at::Tensor> &tensor_vec, std::unique_ptr<ACCL::Buffer<float>> &data, const at::TensorOptions &options, bool do_on_root, bool do_on_others, int opts_root_rank = 0);
   
-  void copy_back_tensor(at::Tensor tensor_original, std::unique_ptr<ACCL::BaseBuffer> &data, bool do_on_root, bool do_on_others, int opts_root_rank = 0);
+  void copy_back_tensor(at::Tensor tensor_original, std::unique_ptr<ACCL::Buffer<float>> &data, bool do_on_root, bool do_on_others, int opts_root_rank = 0);
 
-  void copy_back_tensorvec(const std::vector<at::Tensor> &dsttensorvec, std::unique_ptr<ACCL::BaseBuffer> &data, at::Tensor &dsttensor, int numel, int offset, bool do_on_root, bool do_on_others, int opts_root_rank = 0);
+  void copy_back_tensorvec(const std::vector<at::Tensor> &dsttensorvec, std::unique_ptr<ACCL::Buffer<float>> &data, at::Tensor &dsttensor, int numel, int offset, bool do_on_root, bool do_on_others, int opts_root_rank = 0);
   
   static std::once_flag onceFlagInitACCL;
 
@@ -335,8 +335,8 @@ private:
   xrt::bo buf0;
   xrt::bo buf1;
 
-  std::unique_ptr<ACCL::BaseBuffer> in_buf;
-  std::unique_ptr<ACCL::BaseBuffer> out_buf;
+  std::unique_ptr<ACCL::Buffer<float>> in_buf;
+  std::unique_ptr<ACCL::Buffer<float>> out_buf;
 };
 
 } // namespace c10d
