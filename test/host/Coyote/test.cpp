@@ -479,6 +479,83 @@ void configure_cyt_tcp(std::vector<rank_t> &ranks, int local_rank, ACCL::CoyoteD
 
 }
 
+void test_copy(ACCL::ACCL &accl, options_t &options) {
+	std::cout << "Start copy function " << std::endl;
+	unsigned int count = options.count;
+
+	if (options.count*sizeof(dataType::int32) > options.rxbuf_size){
+		std::cout<<"experiment size larger than buffer size, exiting..."<<std::endl;
+		return;
+	}
+
+	//auto op_buf = accl.create_coyotebuffer<int>(count, dataType::int32);
+	//auto res_buf = accl.create_coyotebuffer<int>(count, dataType::int32);
+	std::unique_ptr<Buffer<float>> src_buf = accl.create_buffer_host<float>(options.rxbuf_size/sizeof(float), ACCL::dataType::float32);
+  	std::unique_ptr<Buffer<float>> dest_buf = accl.create_buffer_host<float>(options.rxbuf_size/sizeof(float), ACCL::dataType::float32);
+
+	for (int n = 0; n < options.nruns; n++)
+	{
+		std::cout << "Repetition " <<n<< std::endl<<std::flush;
+		for (int i = 0; i < count; i++) src_buf.get()->buffer()[i] = i;
+		for (int i = 0; i < count; i++) dest_buf.get()->buffer()[i] = 0;
+
+		//if (options.host == 0){ op_buf->sync_to_device(); }
+		//if (options.host == 0){ res_buf->sync_to_device(); }
+
+		test_debug("Reducing data...", options);
+
+		MPI_Barrier(MPI_COMM_WORLD);
+		double durationUs = 0.0;
+		accl.barrier();
+		std::cout<<"Pass accl barrier"<<std::endl;
+		auto start = std::chrono::high_resolution_clock::now();
+		
+		bool from_fpga = false;
+		bool to_fpga = false;
+		bool run_async = false;
+		std::cout<<"Args:" << from_fpga << to_fpga << run_async;
+		ACCL::ACCLRequest* req = accl.copy(*src_buf, *dest_buf, count, from_fpga, to_fpga, run_async);
+		
+		//accl.wait(req, 1000ms);
+		auto end = std::chrono::high_resolution_clock::now();
+		durationUs = (std::chrono::duration_cast<std::chrono::nanoseconds>(end-start).count() / 1000.0);
+		std::cout<<"host measured durationUs:"<<durationUs<<std::endl;
+
+		durationUs = (double)accl.get_duration(req)/1000.0;
+		if(durationUs > 1.0){
+			accl_log(mpi_rank, format_log("allreduce", options, durationUs, 0));
+		}
+
+		std::this_thread::sleep_for(10ms);
+		//if (options.host == 0){ op_buf->sync_from_device(); }
+		//if (options.host == 0){ res_buf->sync_from_device(); }
+
+		int errors = 0;
+
+		for (unsigned int i = 0; i < count; ++i) {
+			float res = dest_buf.get()->buffer()[i];
+			float ref = i * mpi_size;
+
+			if (res != ref) {
+			std::cout << std::to_string(i + 1) + "th item is incorrect! (" +
+							std::to_string(res) + " != " + std::to_string(ref) + ")"
+					<< std::endl;
+			errors += 1;
+			}
+		}
+
+		if (errors > 0) {
+			std::cout << std::to_string(errors) + " errors!" << std::endl;
+			failed_tests++;
+		} else {
+			std::cout << "Test is successful!" << std::endl;
+		}
+	}
+
+	src_buf->free_buffer();
+	dest_buf->free_buffer();
+
+}
 
 void test_sendrcv(ACCL::ACCL &accl, options_t &options) {
   	std::cout << "Start send recv test..." << std::endl<<std::flush;
@@ -967,17 +1044,19 @@ void test_allreduce(ACCL::ACCL &accl, options_t &options,
 		return;
 	}
 
-	auto op_buf = accl.create_coyotebuffer<int>(count, dataType::int32);
-	auto res_buf = accl.create_coyotebuffer<int>(count, dataType::int32);
+	//auto op_buf = accl.create_coyotebuffer<int>(count, dataType::int32);
+	//auto res_buf = accl.create_coyotebuffer<int>(count, dataType::int32);
+	std::unique_ptr<Buffer<float>> op_buf = accl.create_buffer_host<float>(options.rxbuf_size/sizeof(float), ACCL::dataType::float32);
+  	std::unique_ptr<Buffer<float>> res_buf = accl.create_buffer_host<float>(options.rxbuf_size/sizeof(float), ACCL::dataType::float32);
 
 	for (int n = 0; n < options.nruns; n++)
 	{
 		std::cout << "Repetition " <<n<< std::endl<<std::flush;
 		for (int i = 0; i < count; i++) op_buf.get()->buffer()[i] = i;
-		for (int i = 0; i < count; i++) res_buf.get()->buffer()[i] = 0;
+		for (int i = 0; i < count; i++) res_buf.get()->buffer()[i] = 0.33;
 
-		if (options.host == 0){ op_buf->sync_to_device(); }
-		if (options.host == 0){ res_buf->sync_to_device(); }
+		//if (options.host == 0){ op_buf->sync_to_device(); }
+		//if (options.host == 0){ res_buf->sync_to_device(); }
 
 		test_debug("Reducing data...", options);
 
@@ -986,8 +1065,15 @@ void test_allreduce(ACCL::ACCL &accl, options_t &options,
 		accl.barrier();
 		std::cout<<"Pass accl barrier"<<std::endl;
 		auto start = std::chrono::high_resolution_clock::now();
-		ACCL::ACCLRequest* req = accl.allreduce(*op_buf, *res_buf, count, function, GLOBAL_COMM, true, true, dataType::none, true);
-		accl.wait(req, 1000ms);
+		
+		bool from_fpga = false;
+		bool to_fpga = false;
+		bool run_async = false;
+		std::cout<<"Args:" << from_fpga << to_fpga << run_async;
+		//ACCL::ACCLRequest* req = accl.allreduce(*op_buf, *res_buf, count, function, GLOBAL_COMM, true, true, dataType::none, true);
+		ACCL::ACCLRequest* req = accl.allreduce(*op_buf, *res_buf, count, function, GLOBAL_COMM, from_fpga, to_fpga, dataType::none, run_async);
+		
+		//accl.wait(req, 1000ms);
 		auto end = std::chrono::high_resolution_clock::now();
 		durationUs = (std::chrono::duration_cast<std::chrono::nanoseconds>(end-start).count() / 1000.0);
 		std::cout<<"host measured durationUs:"<<durationUs<<std::endl;
@@ -998,8 +1084,8 @@ void test_allreduce(ACCL::ACCL &accl, options_t &options,
 		}
 
 		std::this_thread::sleep_for(10ms);
-		if (options.host == 0){ op_buf->sync_from_device(); }
-		if (options.host == 0){ res_buf->sync_from_device(); }
+		//if (options.host == 0){ op_buf->sync_from_device(); }
+		//if (options.host == 0){ res_buf->sync_from_device(); }
 
 		int errors = 0;
 
@@ -1141,7 +1227,13 @@ void test_accl_base(options_t options)
 
 	MPI_Barrier(MPI_COMM_WORLD);
 	
-
+	if(options.test_mode == ACCL_COPY || options.test_mode == 0){
+		debug(accl->dump_eager_rx_buffers(false));
+		MPI_Barrier(MPI_COMM_WORLD);
+		test_copy(*accl, options);
+		debug(accl->dump_communicator());
+		debug(accl->dump_eager_rx_buffers(false));
+	}
 	if(options.test_mode == ACCL_SEND || options.test_mode == 0){
 		debug(accl->dump_eager_rx_buffers(false));
 		MPI_Barrier(MPI_COMM_WORLD);
