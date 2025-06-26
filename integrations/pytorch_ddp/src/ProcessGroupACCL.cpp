@@ -57,6 +57,35 @@ namespace c10d {
 #define ALLGATHER_SIDESTEP
 #define BROADCAST_SIDESTEP false
 #define ALLREDUCE_SIDESTEP false
+
+#define MICRO_BENCH_FINE true
+#define MICRO_BENCH_COARSE true
+#if MICRO_BENCH_FINE
+#define START_FINE(name) \
+  std::chrono::time_point<std::chrono::high_resolution_clock> start_##name  = std::chrono::high_resolution_clock::now();
+#define STOP_FINE(name, accl_nbytes)						\
+  auto end_##name = std::chrono::high_resolution_clock::now();		\
+  double durationUs_##name = (std::chrono::duration_cast<std::chrono::nanoseconds>(end_##name-start_##name).count() / 1000.0); \
+  ACCL::debug(#name "_" + std::string(x_MAKE_STRING(COLL_NAME)) + "_" + std::to_string(accl_nbytes) + " durationUs: " + std::to_string(durationUs_##name));
+#else
+#define START_FINE(name)
+#define STOP_FINE(name, accl_nbytes)
+#endif
+
+
+#if MICRO_BENCH_COARSE
+#define START_COARSE(name) \
+  std::chrono::time_point<std::chrono::high_resolution_clock> start_##name  = std::chrono::high_resolution_clock::now();
+#define STOP_COARSE(name, accl_nbytes)						\
+  auto end_##name = std::chrono::high_resolution_clock::now();		\
+  double durationUs_##name = (std::chrono::duration_cast<std::chrono::nanoseconds>(end_##name-start_##name).count() / 1000.0); \
+  ACCL::debug(#name "_" + std::string(x_MAKE_STRING(COLL_NAME)) + "_" + std::to_string(accl_nbytes) + " durationUs: " + std::to_string(durationUs_##name));
+#else
+#define START_COARSE(name)
+#define STOP_COARSE(name)
+#endif
+
+
 // Checks whether sidestepping suceeded
 #define MPI_CHECK(cmd)                                                   \
   do {                                                                   \
@@ -88,8 +117,8 @@ std::map<at::ScalarType, MPI_Datatype> mpiDatatype = {
 
 
 #define RDVZ_THRESHOLD 64
-// This is the maximal message size. 2^21 = 2MB larger sizes get segmented
-#define ACCL_MSG_SIZE 2097152
+// This is the maximal message size. 2^22 = 2MB larger sizes get segmented
+#define ACCL_MSG_SIZE 4194304
 // counts are rounded up to this number for stability reasons
 #define ROUND_NR 256
 //Perform ceiling division
@@ -105,10 +134,21 @@ std::map<at::ScalarType, MPI_Datatype> mpiDatatype = {
 #define DO_COND ((do_on_root && opts_root_rank == rank_) || (do_on_others && opts_root_rank != rank_))
 
 //Before ACCL collective call: Change buffer types from Torch-types to ACCL-types and log
+
+
 #define PRE_REQUEST(opname, tensor)					\
+  START_FINE(type)    \
   in_buf->change_type(convert_datatype_from_torch(tensor.scalar_type())); \
   out_buf->change_type(convert_datatype_from_torch(tensor.scalar_type()));   \
-  ACCL::debug("Performing " #opname " of " + std::to_string(tensor.numel()) + " items")
+  STOP_FINE(type, tensor.nbytes())					\
+  ACCL::debug("Performing " #opname " of " + std::to_string(tensor.numel()) + " items"); \
+  			
+
+//std::this_thread::sleep_for(10ms);
+#define POST_REQUEST(name, nbytes)				\				
+  double durationUs_accl_##COLL_NAME = (double)accl->get_duration(req)/1000.0; \
+  ACCL::debug("device_" + std::string(x_MAKE_STRING(COLL_NAME)) + "_"  + std::to_string(nbytes) + " durationUs: " + std::to_string(durationUs_accl_##COLL_NAME)); 	\	
+
 
   
 namespace {
@@ -117,9 +157,11 @@ namespace {
                  const std::unique_ptr<ACCL::Buffer<float>>& in_buf,
                  const std::unique_ptr<ACCL::Buffer<float>>& out_buf,
                  size_t max_elems = 20) {
+  
   std::stringstream ss;
+  
   ss << label << "\n";
-
+                
   // Print input tensor
   ss << "in_tensor (first " << max_elems << "): "
      << in_tensor.flatten().slice(0, 0, max_elems) << "\n";
@@ -416,7 +458,9 @@ void accl_sa_handler(int)
 
 void ProcessGroupACCL::init_input_tensor(at::Tensor &tensor, std::unique_ptr<ACCL::Buffer<float>> &data, bool do_on_root, bool do_on_others, int opts_root_rank) {
   if DO_COND {
-	std::memcpy(data->byte_array(), tensor.data_ptr(), tensor.numel() * tensor.element_size());
+	  //std::memcpy(data->byte_array(), tensor.data_ptr(), tensor.numel() * tensor.element_size());
+    void* raw_ptr = tensor.data_ptr();
+    data->update_buffer(static_cast<float*>(raw_ptr), reinterpret_cast<addr_t>(raw_ptr));
 	if (!coyote_enabled) {
 	    data->sync_to_device();
 	}
@@ -440,7 +484,7 @@ void ProcessGroupACCL::init_input_data_vec(std::vector<at::Tensor> &tensor_vec, 
 void ProcessGroupACCL::copy_back_tensor(at::Tensor tensor_original, std::unique_ptr<ACCL::Buffer<float>> &data, bool do_on_root, bool do_on_others, int opts_root_rank){
   if DO_COND {
       if (!coyote_enabled) {
-	data->sync_from_device();
+	      data->sync_from_device();
       }
       std::memcpy(tensor_original.data_ptr(), data->byte_array(), tensor_original.numel() * tensor_original.element_size());
   }
@@ -477,7 +521,7 @@ ProcessGroupACCL::ProcessGroupACCL(
       compression(compression), initialized(false) {
 
   ACCL::debug("Process Group constructor called");
-  
+
   struct sigaction sa;
   memset(&sa, 0, sizeof(sa));
   sa.sa_handler = accl_sa_handler;
@@ -549,8 +593,9 @@ void ProcessGroupACCL::initialize() {
     int segsize = 4096 * 1024;
 
     std::cerr << "initializing coyote accl" << std::endl;
-    accl.get()->initialize(ranks_, rank_, 16, 1024, RDVZ_THRESHOLD, 4096*1024);
-    
+    //initialize(ranks, local_rank, n_egr_rx_bufs, egr_rx_buf_size, max_egr_size, max_rndzv_size)
+    //test.cpp: initialize(ranks, mpi_rank, mpi_size, 64, 64, options.seg_size)
+    accl.get()->initialize(ranks_, rank_, size_, RDVZ_THRESHOLD, RDVZ_THRESHOLD, ACCL_MSG_SIZE);
     ACCL::debug(std::string("[ACCL coyote] communicator: ") + accl->dump_communicator());
 
 
@@ -659,10 +704,10 @@ c10::intrusive_ptr<Work> ProcessGroupACCL::enqueue(
 void ProcessGroupACCL::run_broadcast(at::Tensor in_tensor,
                                      const BroadcastOptions &opts) {
 
-  std::chrono::time_point<std::chrono::high_resolution_clock> start_inner  = std::chrono::high_resolution_clock::now();
-
+  
   // This is very experimental
   #ifdef SIDESTEP_BCAST_WITH_ALLREDUCE
+  START_FINE(init)
   // It seems to have issues with non-even numbers, so we round to ACCL_MSG_SIZE
   int rounded_count = (in_tensor.numel() + ROUND_NR) & ~ROUND_NR;
   
@@ -679,33 +724,42 @@ void ProcessGroupACCL::run_broadcast(at::Tensor in_tensor,
       init_input_tensor(zero_tensor, in_buf, false, true, opts.rootRank);
   }
   init_input_tensor(zero_tensor, out_buf, true, false, opts.rootRank);
+  STOP_FINE(init, in_tensor.nbytes())
 
+  START_FINE(lock)
   // Reserve device
   c10::DeviceGuard guard(in_tensor.device());
   std::unique_lock<std::mutex> globalLock(pgGlobalMutex_);
+  STOP_FINE(lock, in_tensor.nbytes()) 
 
   PRE_REQUEST(Broadcast, in_tensor);
-  
-  auto req = accl->allreduce(*in_buf, *out_buf, imaginary_count,  ACCL::reduceFunction::SUM, GLOBAL_COMM, false, false);      
+  auto req = accl->allreduce(*in_buf, *out_buf, imaginary_count,  ACCL::reduceFunction::SUM, GLOBAL_COMM, false, false);   
+  POST_REQUEST("broadcast", in_tensor.nbytes())   
 
   copy_back_tensor(in_tensor, out_buf, true, true);
   
   #else
-
+  START_FINE(init)
   int rounded_count = (in_tensor.numel() + ROUND_NR) & ~ROUND_NR;
   
   if (opts.rootRank == rank_){
+    
       init_input_tensor(in_tensor, in_buf, true, false, opts.rootRank);
   }
+  STOP_FINE(init, in_tensor.nbytes())
 
+  START_FINE(lock)
   c10::DeviceGuard guard(in_tensor.device());
   std::unique_lock<std::mutex> globalLock(pgGlobalMutex_);
+  STOP_FINE(lock, in_tensor.nbytes())
 
-  PRE_REQUEST(Broadcast, in_tensor);
-      
+  PRE_REQUEST(Broadcast, in_tensor)  
   auto req = accl->bcast(*in_buf, rounded_count, opts.rootRank);
-
+  POST_REQUEST("broadcast", in_tensor.nbytes()) 
+  
+  START_FINE(copy)
   copy_back_tensor(in_tensor, in_buf, false, true, opts.rootRank);
+  STOP_FINE(copy, in_tensor.nbytes())
   #endif
 }
 
@@ -715,6 +769,7 @@ ProcessGroupACCL::broadcast(std::vector<at::Tensor> &tensors,
   checkSingleTensor(tensors);
   std::function<void(std::unique_ptr<WorkEntry> &)> runFunc =
       [opts, this](std::unique_ptr<WorkEntry> &entry) {
+  START_COARSE(total)
 	if (BROADCAST_SIDESTEP){
 	    
 	auto data = (entry->src)[0];
@@ -743,6 +798,7 @@ ProcessGroupACCL::broadcast(std::vector<at::Tensor> &tensors,
           run_broadcast(tensor, opts);
         }
 	}
+  STOP_COARSE(total, ((entry->src)[0]).nbytes())
       };
   auto entry =
       std::make_unique<WorkEntry>(&tensors, &tensors, std::move(runFunc));
@@ -757,60 +813,86 @@ ProcessGroupACCL::broadcast(std::vector<at::Tensor> &tensors,
 void ProcessGroupACCL::run_allreduce(at::Tensor in_tensor,
                                      const AllreduceOptions &opts) {
   
-  //print_state("BEFORE INIT_INPUT_TENSOR", in_tensor, in_buf, out_buf);
+  //print_state("Rank " + std::to_string(rank_) + ": BEFORE INIT_INPUT_TENSOR", in_tensor, in_buf, out_buf);
+  START_FINE(init)
   init_input_tensor(in_tensor, in_buf, true, true);
-  //print_state("AFTER INIT_INPUT_TENSOR", in_tensor, in_buf, out_buf);
-                                      
+  STOP_FINE(init, in_tensor.nbytes())
+  //print_state("Rank " + std::to_string(rank_) + ": AFTER INIT_INPUT_TENSOR", in_tensor, in_buf, out_buf);
+             
+  
   // Reserve device
+  START_FINE(lock)
   c10::DeviceGuard guard(in_tensor.device());
   std::unique_lock<std::mutex> globalLock(pgGlobalMutex_);
-  PRE_REQUEST(Allreduce,in_tensor); 
   int rounded_count = (in_tensor.numel() + ROUND_NR) & ~ROUND_NR;
+  STOP_FINE(lock, in_tensor.nbytes())
   
-  //print_state("BEFORE ACCL_ALLREDUCE", in_tensor, in_buf, out_buf);
-  auto req = accl->allreduce(*in_buf, *out_buf, rounded_count, acclOp.at(opts.reduceOp));     
-  //print_state("AFTER ACCL_ALLREDUCE", in_tensor, in_buf, out_buf); 
-  copy_back_tensor(in_tensor, out_buf, true, true);
-  //print_state("AFTER COPY_BACK_TENSOR", in_tensor, in_buf, out_buf);
+  //print_state("Rank " + std::to_string(rank_) + ": BEFORE ACCL_ALLREDUCE", in_tensor, in_buf, out_buf);
+  
+  PRE_REQUEST(Allreduce,in_tensor);
+  MPI_Barrier(MPI_COMM_WORLD);
+  auto now = std::chrono::high_resolution_clock::now();
+  auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+  ACCL::debug("Start lib" + std::to_string(nanos));    
+  START_FINE(lib) 
+  auto req = accl->allreduce(*in_buf, *in_buf, rounded_count, acclOp.at(opts.reduceOp));
+  MPI_Barrier(MPI_COMM_WORLD);
+  now = std::chrono::high_resolution_clock::now();
+  nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+  ACCL::debug("End lib" + std::to_string(nanos)); 
+  STOP_FINE(lib, in_tensor.nbytes()) 
+
+  POST_REQUEST("allreduce", in_tensor.nbytes())  
+  //print_state("Rank " + std::to_string(rank_) + ": AFTER ACCL_ALLREDUCE", in_tensor, in_buf, out_buf); 
+  START_FINE(copy)
+  //copy_back_tensor(in_tensor, out_buf, true, true);
+  STOP_FINE(copy, in_tensor.nbytes())
+  //print_state("Rank " + std::to_string(rank_) + ": AFTER COPY_BACK_TENSOR", in_tensor, in_buf, out_buf);
 }
 
 c10::intrusive_ptr<Work>
 ProcessGroupACCL::allreduce(std::vector<at::Tensor> &tensors,
                             const AllreduceOptions &opts) {
+  
   checkSingleTensor(tensors);
 
   std::function<void(std::unique_ptr<WorkEntry> &)> runFunc =
-      [opts, this](std::unique_ptr<WorkEntry> &entry) {
-	  if (ALLREDUCE_SIDESTEP){
-	    auto data = (entry->src)[0];
-	    ACCL::debug("[Allreduce] -- Sidestepped using OpenMPI -- size " + std::to_string(data.numel()));
-	    c10::DeviceGuard guard(data.device());
-	    std::unique_lock<std::mutex> globalLock(pgGlobalMutex_);
-	    MPI_CHECK(MPI_Allreduce(
-			  MPI_IN_PLACE,
-			  data.data_ptr(),
-			  data.numel(),
-			  mpiDatatype.at(data.scalar_type()),
-			  mpiOp.at(opts.reduceOp),
-			  MPI_COMM_WORLD));
-	} else {
-	    auto tensor = (entry->src)[0];
-	    // Segment data if necessary
-	    if (tensor.nbytes() > bufsize) {
-		    size_t non_zero_dim_count = tensor.numel() / tensor.size(0);
-		    size_t n = bufsize / (tensor.itemsize() * non_zero_dim_count);
-		    ACCL::debug("[Allreduce] Segmenting tensor of size " + std::to_string(tensor.nbytes()) + " into " + std::to_string(n * non_zero_dim_count) + "-sized elements ");
-		    for (size_t i = 0; i < tensor.size(0); i += n) {
-		    // ACCL::debug("part " + std::to_string(i) + "!");
-		    size_t end = std::min(n, static_cast<size_t>(tensor.size(0)) - i);
-		    run_allreduce(tensor.narrow(0, i, end), opts);
-		    }
+    [opts, this](std::unique_ptr<WorkEntry> &entry) {
+      MPI_Barrier(MPI_COMM_WORLD);
+      START_COARSE(total) 
+	    if (ALLREDUCE_SIDESTEP){
+	      auto data = (entry->src)[0];
+	      ACCL::debug("[Allreduce] -- Sidestepped using OpenMPI -- size " + std::to_string(data.numel()));
+	      c10::DeviceGuard guard(data.device());
+	      std::unique_lock<std::mutex> globalLock(pgGlobalMutex_);
+	      MPI_CHECK(MPI_Allreduce(
+			    MPI_IN_PLACE,
+			    data.data_ptr(),
+			    data.numel(),
+			    mpiDatatype.at(data.scalar_type()),
+			    mpiOp.at(opts.reduceOp),
+			    MPI_COMM_WORLD));
 	    } else {
-        ACCL::debug("call run_allreduce, no segmentation");
-		    run_allreduce(tensor, opts);
-	    }
-  }
-      };
+	      auto tensor = (entry->src)[0];
+	      // Segment data if necessary
+	      if (tensor.nbytes() > bufsize) {
+		      size_t non_zero_dim_count = tensor.numel() / tensor.size(0);
+		      size_t n = bufsize / (tensor.itemsize() * non_zero_dim_count);
+		      ACCL::debug("[Allreduce] Segmenting tensor of size " + std::to_string(tensor.nbytes()) + " into " + std::to_string(n * non_zero_dim_count) + "-sized elements ");
+		      for (size_t i = 0; i < tensor.size(0); i += n) {
+		        // ACCL::debug("part " + std::to_string(i) + "!");
+		        size_t end = std::min(n, static_cast<size_t>(tensor.size(0)) - i);
+		        run_allreduce(tensor.narrow(0, i, end), opts);
+		      }
+	      } else {
+          ACCL::debug("call run_allreduce, no segmentation");
+		      run_allreduce(tensor, opts);
+	      }
+      }
+    MPI_Barrier(MPI_COMM_WORLD);
+    STOP_COARSE(total, ((entry->src)[0]).nbytes())
+   
+  };
   auto entry =
       std::make_unique<WorkEntry>(&tensors, &tensors, std::move(runFunc));
   return enqueue(std::move(entry), "accl::all_reduce", OpType::ALLREDUCE,
