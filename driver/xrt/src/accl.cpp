@@ -26,6 +26,41 @@
 // 64 MB
 #define NETWORK_BUF_SIZE (64 << 20)
 
+
+
+//Time Measurement stuff
+#define x_MAKE_STRING(s) MAKE_STRING(s)
+#define MAKE_STRING(s) #s    
+#define COLL_NAME UNNAMED
+
+#define MICRO_BENCH_FINE true
+#define MICRO_BENCH_COARSE true
+#if MICRO_BENCH_FINE
+#define START_FINE(name) \
+  std::chrono::time_point<std::chrono::high_resolution_clock> start_##name  = std::chrono::high_resolution_clock::now();
+#define STOP_FINE(name, accl_nbytes)						\
+  auto end_##name = std::chrono::high_resolution_clock::now();		\
+  double durationUs_##name = (std::chrono::duration_cast<std::chrono::nanoseconds>(end_##name-start_##name).count() / 1000.0); \
+  std::cerr << (#name "_" + std::string(x_MAKE_STRING(COLL_NAME)) + "_" + std::to_string(accl_nbytes) + " durationUs: " + std::to_string(durationUs_##name)) << std::endl;
+#else
+#define START_FINE(name)
+#define STOP_FINE(name, accl_nbytes)
+#endif
+
+
+#if MICRO_BENCH_COARSE
+#define START_COARSE(name) \
+  std::chrono::time_point<std::chrono::high_resolution_clock> start_##name  = std::chrono::high_resolution_clock::now();
+#define STOP_COARSE(name, accl_nbytes)						\
+  auto end_##name = std::chrono::high_resolution_clock::now();		\
+  double durationUs_##name = (std::chrono::duration_cast<std::chrono::nanoseconds>(end_##name-start_##name).count() / 1000.0); \
+  std::cerr << (#name "_" + std::string(x_MAKE_STRING(COLL_NAME)) + "_" + std::to_string(accl_nbytes) + " durationUs: " + std::to_string(durationUs_##name)) << std::endl;
+#else
+#define START_COARSE(name)
+#define STOP_COARSE(name)
+#endif
+
+
 namespace ACCL {
 ACCL::ACCL(xrt::device &device, xrt::ip &cclo_ip, xrt::kernel &hostctrl_ip,
            int devicemem, const std::vector<int> &rxbufmem,
@@ -777,12 +812,15 @@ ACCLRequest *ACCL::reduce(dataType src_data_type, dataType dst_data_type,
   return handle;
 }
 
+#undef COLL_NAME
+#define COLL_NAME Allreduce
+
 ACCLRequest *ACCL::allreduce(BaseBuffer &sendbuf,
                              BaseBuffer &recvbuf, unsigned int count,
                              reduceFunction func, communicatorId comm_id,
                              bool from_fpga, bool to_fpga, dataType compress_dtype,
                              bool run_async, std::vector<ACCLRequest *> waitfor) {
-  
+  START_FINE(lib_internal)
   //std::cerr << "ACCL::allreduce called" << std::endl;
   CCLO::Options options{};
 
@@ -813,19 +851,27 @@ ACCLRequest *ACCL::allreduce(BaseBuffer &sendbuf,
   options.reduce_function = func;
   options.compress_dtype = compress_dtype;
   options.waitfor = waitfor;
+  START_FINE(async_call)
   ACCLRequest *handle = call_async(options);
+  STOP_FINE(async_call, count * 4)
   
 
   if (!run_async) {
     //std::cerr << "reached wait(handle)" << std::endl;
+    START_FINE(wait)
     wait(handle);
+    STOP_FINE(wait, count * 4)
     //std::cerr << "finished wait(handle)" << std::endl;
     if (to_fpga == false && false) {
       auto slice = recvbuf.slice(0, count);
       slice->sync_from_device();
     }
+    
     check_return_value("allreduce", handle);
   }
+
+ 
+  STOP_FINE(lib_internal, count * 4)
 
   return handle;
 }
@@ -1071,11 +1117,12 @@ void ACCL::parse_hwid(){
 void ACCL::initialize(const std::vector<rank_t> &ranks, int local_rank,
                            int n_egr_rx_bufs, addr_t egr_rx_buf_size,
                            addr_t max_egr_size, addr_t max_rndzv_size) {
-
+  debug("Parse hwid");
+  std::cerr <<"A"<< std::endl;
   parse_hwid();
-
+  debug("Soft reset");
   soft_reset();
-
+  debug("check cclo offset something");                         
   if (cclo->read(CCLO_ADDR::CFGRDY_OFFSET) != 0) {
     throw std::runtime_error("CCLO appears configured, might be in use. Please "
                              "reset the CCLO and retry");
@@ -1111,8 +1158,9 @@ void ACCL::initialize(const std::vector<rank_t> &ranks, int local_rank,
   CCLO::Options options{};
   options.scenario = operation::config;
   options.cfg_function = cfgFunc::enable_pkt;
+  std::cerr <<"B"<< std::endl;
   call_sync(options);
-
+  std::cerr <<"C"<< std::endl;
   config_rdy = true;
 
   debug("Accelerator ready!");
@@ -1387,8 +1435,9 @@ ACCLRequest *ACCL::call_async(CCLO::Options &options) {
   }
 
   prepare_call(options);
-  //std::cerr << "Before cclo->start(options)" << std::endl;
+  START_FINE(cclo_start)
   ACCLRequest *req = cclo->start(options);
+  STOP_FINE(cclo_start, options.count * 4)
   //std::cerr << "After cclo->start(options)" << std::endl;
   return req;
 }

@@ -22,8 +22,43 @@
 #include <future>
 #include <iomanip>
 
+//Time Measurement stuff
+#define x_MAKE_STRING(s) MAKE_STRING(s)
+#define MAKE_STRING(s) #s    
+#define COLL_NAME Allreduce
+
+#define MICRO_BENCH_FINE true
+#define MICRO_BENCH_COARSE true
+#if MICRO_BENCH_FINE
+#define START_FINE(name) \
+  std::chrono::time_point<std::chrono::high_resolution_clock> start_##name  = std::chrono::high_resolution_clock::now();
+#define STOP_FINE(name, accl_nbytes)						\
+  auto end_##name = std::chrono::high_resolution_clock::now();		\
+  double durationUs_##name = (std::chrono::duration_cast<std::chrono::nanoseconds>(end_##name-start_##name).count() / 1000.0); \
+  std::cerr << (#name "_" + std::string(x_MAKE_STRING(COLL_NAME)) + "_" + std::to_string(accl_nbytes) + " durationUs: " + std::to_string(durationUs_##name)) << std::endl;
+#else
+#define START_FINE(name)
+#define STOP_FINE(name, accl_nbytes)
+#endif
+
+
+#if MICRO_BENCH_COARSE
+#define START_COARSE(name) \
+  std::chrono::time_point<std::chrono::high_resolution_clock> start_##name  = std::chrono::high_resolution_clock::now();
+#define STOP_COARSE(name, accl_nbytes)						\
+  auto end_##name = std::chrono::high_resolution_clock::now();		\
+  double durationUs_##name = (std::chrono::duration_cast<std::chrono::nanoseconds>(end_##name-start_##name).count() / 1000.0); \
+  std::cerr << (#name "_" + std::string(x_MAKE_STRING(COLL_NAME)) + "_" + std::to_string(accl_nbytes) + " durationUs: " + std::to_string(durationUs_##name)) << std::endl;
+#else
+#define START_COARSE(name)
+#define STOP_COARSE(name)
+#endif
+
+
 static void finish_coyote_request(ACCL::CoyoteRequest *req) {
+  //std::cerr  << ("Before wait kernel in finish_coyote request (thread spawend in ACCLRequest::start)") << std::endl; 
   req->wait_kernel();
+  //std::cerr << ("After wait kernel in finish_coyote request (thread spawend in ACCLRequest::start)") << std::endl; 
   ACCL::CoyoteDevice *cclo = reinterpret_cast<ACCL::CoyoteDevice *>(req->cclo());
   // get ret code before notifying waiting threads
   req->set_retcode(cclo->read(ACCL::CCLO_ADDR::RETCODE_OFFSET));
@@ -36,6 +71,8 @@ static void finish_coyote_request(ACCL::CoyoteRequest *req) {
 namespace ACCL {
 
 void CoyoteRequest::start() {
+  START_FINE(startTotal)
+ 
   assert(this->get_status() ==  operationStatus::EXECUTING);
 
   int function, arg_id = 0;
@@ -46,13 +83,16 @@ void CoyoteRequest::start() {
     function = static_cast<int>(options.reduce_function);
   }
   uint32_t flags = static_cast<uint32_t>(options.host_flags) << 8 | static_cast<uint32_t>(options.stream_flags);
-
+ 
+  
   auto coyote_proc = reinterpret_cast<ACCL::CoyoteDevice *>(cclo())->get_device();
-
+ 
+  
   if ((coyote_proc->getCSR((OFFSET_HOSTCTRL + HOSTCTRL_ADDR::AP_CTRL)>>2) & 0x4) == 0) { // read AP_CTRL and check bit 3 (the idle bit)
     throw std::runtime_error(
         "Error, collective is already running, wait for previous to complete!");
   }
+  
 
   switch(options.scenario) {
     case ACCL::operation::copy: {
@@ -209,6 +249,10 @@ void CoyoteRequest::start() {
     break;
     }
     case ACCL::operation::allreduce:{
+      //std::cout << "[DEBUG] Launching ALLREDUCE with count=" << options.count
+      //    << ", comm=" << options.comm
+      //    << ", function=" << static_cast<int>(options.reduce_function)
+      //    << std::endl;
       coyote_proc->setCSR(static_cast<uint32_t>(options.scenario), (OFFSET_HOSTCTRL + HOSTCTRL_ADDR::SCEN)>>2);
       coyote_proc->setCSR(static_cast<uint32_t>(options.count), (OFFSET_HOSTCTRL + HOSTCTRL_ADDR::LEN)>>2);
       coyote_proc->setCSR(static_cast<uint32_t>(options.comm), (OFFSET_HOSTCTRL + HOSTCTRL_ADDR::COMM)>>2);
@@ -216,9 +260,11 @@ void CoyoteRequest::start() {
       coyote_proc->setCSR(static_cast<uint32_t>(options.arithcfg_addr), (OFFSET_HOSTCTRL + HOSTCTRL_ADDR::DATAPATH_CFG)>>2);
       coyote_proc->setCSR(static_cast<uint32_t>(options.compression_flags), (OFFSET_HOSTCTRL + HOSTCTRL_ADDR::COMPRESSION_FLAGS)>>2);
       coyote_proc->setCSR(static_cast<uint32_t>(flags), (OFFSET_HOSTCTRL + HOSTCTRL_ADDR::STREAM_FLAGS)>>2);
+      //send buf/in buf
       addr_t addr_a = options.addr_0->address();
       coyote_proc->setCSR(static_cast<uint32_t>(addr_a), (OFFSET_HOSTCTRL + HOSTCTRL_ADDR::ADDRA_0)>>2);
       coyote_proc->setCSR(static_cast<uint32_t>(addr_a >> 32), (OFFSET_HOSTCTRL + HOSTCTRL_ADDR::ADDRA_1)>>2);
+      //rec buf/out buf
       addr_t addr_c = options.addr_2->address();
       coyote_proc->setCSR(static_cast<uint32_t>(addr_c), (OFFSET_HOSTCTRL + HOSTCTRL_ADDR::ADDRC_0)>>2);
       coyote_proc->setCSR(static_cast<uint32_t>(addr_c >> 32), (OFFSET_HOSTCTRL + HOSTCTRL_ADDR::ADDRC_1)>>2);
@@ -258,20 +304,26 @@ void CoyoteRequest::start() {
     case ACCL::operation::nop:
     break;
   }
-  
+ 
+  START_FINE(async_finish_coyote_request)
   auto f = std::async(std::launch::async, finish_coyote_request, this);
-
+  STOP_FINE(async_finish_coyote_request, options.count * 4)
   // start the kernel
+  
   coyote_proc->setCSR(0x1U, (OFFSET_HOSTCTRL + HOSTCTRL_ADDR::AP_CTRL)>>2);
-
+   STOP_FINE(startTotal, options.count * 4)
 }
 
 void CoyoteRequest::wait_kernel() {
   auto coyote_proc = reinterpret_cast<ACCL::CoyoteDevice *>(cclo())->get_device();
   uint32_t is_done = 0;
+  int counter = 0;
   while (!is_done) {
     uint32_t regi = coyote_proc->getCSR((OFFSET_HOSTCTRL + HOSTCTRL_ADDR::AP_CTRL)>>2);
     is_done = (regi >> 1) & 0x1; // get bit 1 of AP_CTRL register
+    if (counter++ % 1000 == 0 && counter < 10'000) { // print every 1000 iterations
+      std::cerr << "[wait_kernel] AP_CTRL=0x" << std::hex << regi << std::endl;
+    }
   }
 }
 
@@ -325,7 +377,7 @@ CoyoteDevice::~CoyoteDevice() {
 
 ACCLRequest *CoyoteDevice::start(const Options &options) {
   ACCLRequest *request = new ACCLRequest;
-
+  //std::cerr << "Started Start" << std::endl;
   if (options.waitfor.size() != 0) {
     throw std::runtime_error("CoyoteDevice does not support chaining");
   }
@@ -337,9 +389,10 @@ ACCLRequest *CoyoteDevice::start(const Options &options) {
   fpga_handle->set_status(operationStatus::QUEUED);
 
   request_map.emplace(std::make_pair(*request, fpga_handle));
-
   launch_request();
+  
 
+  //std::cerr << "finished Start" << std::endl;
   return request;
 
 }
@@ -445,7 +498,11 @@ void CoyoteDevice::launch_request() {
     CoyoteRequest *req = queue.front();
     assert(req->get_status() == operationStatus::QUEUED);
     req->set_status(operationStatus::EXECUTING);
+    //std::cerr << "before calling start in launch request" << std::endl;
+    START_FINE(start_request)
     req->start();
+    STOP_FINE(start_request, 116736)
+    //std::cerr << "after calling start in launch request" << std::endl;
   }
 }
 
