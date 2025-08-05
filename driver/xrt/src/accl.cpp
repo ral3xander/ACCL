@@ -23,6 +23,16 @@
 #include "accl.hpp"
 #include "accl/dummybuffer.hpp"
 
+
+
+
+#include <execinfo.h>
+#include <cxxabi.h>
+#include <iostream>
+#include <cstdlib>
+
+
+
 // 64 MB
 #define NETWORK_BUF_SIZE (64 << 20)
 
@@ -33,8 +43,8 @@
 #define MAKE_STRING(s) #s    
 #define COLL_NAME UNNAMED
 
-#define MICRO_BENCH_FINE true
-#define MICRO_BENCH_COARSE true
+#define MICRO_BENCH_FINE false
+#define MICRO_BENCH_COARSE false
 #if MICRO_BENCH_FINE
 #define START_FINE(name) \
   std::chrono::time_point<std::chrono::high_resolution_clock> start_##name  = std::chrono::high_resolution_clock::now();
@@ -60,8 +70,26 @@
 #define STOP_COARSE(name)
 #endif
 
+void inspect_compression_flags(ACCL::compressionFlags flags) {
+  using ACCL::compressionFlags;
 
+  std::cout << "Compression Flags set:\n";
+
+  if ((flags & compressionFlags::OP0_COMPRESSED) == compressionFlags::OP0_COMPRESSED)
+    std::cout << "- OP0_COMPRESSED\n";
+  if ((flags & compressionFlags::OP1_COMPRESSED) == compressionFlags::OP1_COMPRESSED)
+    std::cout << "- OP1_COMPRESSED\n";
+  if ((flags & compressionFlags::RES_COMPRESSED) == compressionFlags::RES_COMPRESSED)
+    std::cout << "- RES_COMPRESSED\n";
+  if ((flags & compressionFlags::ETH_COMPRESSED) == compressionFlags::ETH_COMPRESSED)
+    std::cout << "- ETH_COMPRESSED\n";
+  if (flags == compressionFlags::NO_COMPRESSION)
+    std::cout << "- NO_COMPRESSION\n";
+}
 namespace ACCL {
+  
+
+
 ACCL::ACCL(xrt::device &device, xrt::ip &cclo_ip, xrt::kernel &hostctrl_ip,
            int devicemem, const std::vector<int> &rxbufmem,
            const arithConfigMap &arith_config)
@@ -85,6 +113,7 @@ ACCL::ACCL(CoyoteDevice *dev, const arithConfigMap &arith_config)
 
 // destructor
 ACCL::~ACCL() {
+  debug("Destructor called");
   deinit();
   delete cclo;
 }
@@ -96,7 +125,7 @@ void ACCL::soft_reset() {
   options.scenario = operation::config;
   options.cfg_function = cfgFunc::reset_periph;
   ACCLRequest *handle = call_async(options);
-  std::chrono::milliseconds timeout(100);
+  std::chrono::milliseconds timeout(10000);
   if(!wait(handle, timeout)){
     throw std::runtime_error("CCLO failed to soft reset");
   }
@@ -826,21 +855,23 @@ ACCLRequest *ACCL::allreduce(BaseBuffer &sendbuf,
 
   const Communicator &communicator = communicators[comm_id];
 
-  if (to_fpga == false && run_async == true) {
+  /*
+  if (run_async == true) {
     std::cerr << "ACCL: async run returns data on FPGA, user must "
                  "sync_from_device() after waiting"
               << std::endl;
   }
-
+*/
   if (count == 0) {
     std::cerr << "ACCL: zero size buffer" << std::endl;
     return nullptr;
   }
-
-  if (from_fpga == false && false) {
+/*
+  if (from_fpga == false) {
     auto slice = sendbuf.slice(0, count);
     slice->sync_to_device();
   }
+*/
 
   options.scenario = operation::allreduce;
   options.comm = communicator.communicators_addr();
@@ -862,11 +893,12 @@ ACCLRequest *ACCL::allreduce(BaseBuffer &sendbuf,
     wait(handle);
     STOP_FINE(wait, count * 4)
     //std::cerr << "finished wait(handle)" << std::endl;
-    if (to_fpga == false && false) {
+    /*
+    if (to_fpga == false) {
       auto slice = recvbuf.slice(0, count);
       slice->sync_from_device();
     }
-    
+    */
     check_return_value("allreduce", handle);
   }
 
@@ -950,12 +982,12 @@ ACCLRequest *ACCL::alltoall(BaseBuffer &sendbuf, BaseBuffer &recvbuf, unsigned i
                  "spare buffers"
               << std::endl;
   }
-
+/*
   if (from_fpga == false) {
     auto slice = sendbuf.slice(0, count * communicator.get_ranks()->size());
     slice->sync_to_device();
   }
-
+*/
   options.scenario = operation::alltoall;
   options.comm = communicator.communicators_addr();
   options.addr_0 = &sendbuf;
@@ -968,10 +1000,12 @@ ACCLRequest *ACCL::alltoall(BaseBuffer &sendbuf, BaseBuffer &recvbuf, unsigned i
 
   if (!run_async) {
     wait(handle);
+    /*
     if (to_fpga == false) {
       auto slice = recvbuf.slice(0, count * communicator.get_ranks()->size());
       slice->sync_from_device();
     }
+    */
     check_return_value("alltoall", handle);
   }
 
@@ -1117,6 +1151,16 @@ void ACCL::parse_hwid(){
 void ACCL::initialize(const std::vector<rank_t> &ranks, int local_rank,
                            int n_egr_rx_bufs, addr_t egr_rx_buf_size,
                            addr_t max_egr_size, addr_t max_rndzv_size) {
+  std::cout << "Ranks in Accl.cpp initialze:\n";
+  for (size_t i = 0; i < ranks.size(); ++i) {
+    const auto &rank = ranks[i];
+    std::cout << "Rank " << i << ": "
+              << "IP = " << rank.ip << ", "
+              << "Port = " << rank.port << ", "
+              << "Session ID = " << rank.session_id << ", "
+              << "Max Segment Size = " << rank.max_segment_size
+              << std::endl;
+  }
   debug("Parse hwid");
   std::cerr <<"A"<< std::endl;
   parse_hwid();
@@ -1158,9 +1202,7 @@ void ACCL::initialize(const std::vector<rank_t> &ranks, int local_rank,
   CCLO::Options options{};
   options.scenario = operation::config;
   options.cfg_function = cfgFunc::enable_pkt;
-  std::cerr <<"B"<< std::endl;
   call_sync(options);
-  std::cerr <<"C"<< std::endl;
   config_rdy = true;
 
   debug("Accelerator ready!");
@@ -1376,6 +1418,7 @@ void ACCL::prepare_call(CCLO::Options &options) {
     options.compression_flags |= compressionFlags::ETH_COMPRESSED;
     if (dtypes.size() == 1) {
       // no operand compression
+      //std::cerr << "Ethernet compression. No Operand Compression." << std::endl;
       dataType dtype = *dtypes.begin();
       std::pair<dataType, dataType> key = {dtype, options.compress_dtype};
       arithcfg = &this->arith_config.at(key);
@@ -1404,9 +1447,10 @@ void ACCL::prepare_call(CCLO::Options &options) {
       }
     }
   }
-
   options.arithcfg_addr = arithcfg->addr();
 }
+  
+
 
 // Request handling
 void ACCL::wait(ACCLRequest *request) {
@@ -1433,8 +1477,12 @@ ACCLRequest *ACCL::call_async(CCLO::Options &options) {
   if (!config_rdy && options.scenario != operation::config) {
     throw std::runtime_error("CCLO not configured, cannot call. Please make sure that you are invoking initialize().");
   }
+  
+  
+
 
   prepare_call(options);
+  //inspect_compression_flags(options.compression_flags);
   START_FINE(cclo_start)
   ACCLRequest *req = cclo->start(options);
   STOP_FINE(cclo_start, options.count * 4)
