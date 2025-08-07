@@ -867,12 +867,13 @@ ProcessGroupACCL::allreduce(std::vector<at::Tensor> &tensors,
 	    } else {
 	      auto tensor = (entry->src)[0];
 	      // Segment data if necessary
-	      if (tensor.nbytes() > bufsize) {
+	      if (tensor.nbytes() > ACCL_MSG_SIZE) {
 		      size_t non_zero_dim_count = tensor.numel() / tensor.size(0);
-		      size_t n = bufsize / (tensor.itemsize() * non_zero_dim_count);
+		      size_t n = ACCL_MSG_SIZE / (tensor.itemsize() * non_zero_dim_count);
 		      ACCL::debug("[Allreduce] Segmenting tensor of size " + std::to_string(tensor.nbytes()) + " into " + std::to_string(n * non_zero_dim_count) + "-sized elements ");
 		      for (size_t i = 0; i < tensor.size(0); i += n) {
-		        // ACCL::debug("part " + std::to_string(i) + "!");
+		        ACCL::debug("part " + std::to_string(i) + "!");
+            std::this_thread::sleep_for(1ms);
 		        size_t end = std::min(n, static_cast<size_t>(tensor.size(0)) - i);
 		        run_allreduce(tensor.narrow(0, i, end), opts);
 		      }
@@ -885,8 +886,7 @@ ProcessGroupACCL::allreduce(std::vector<at::Tensor> &tensors,
     STOP_COARSE(total, ((entry->src)[0]).nbytes())
    
   };
-  auto entry =
-      std::make_unique<WorkEntry>(&tensors, &tensors, std::move(runFunc));
+  auto entry = std::make_unique<WorkEntry>(&tensors, &tensors, std::move(runFunc));
   return enqueue(std::move(entry), "accl::all_reduce", OpType::ALLREDUCE,
                  c10::optional<std::vector<at::Tensor>>(tensors));
 }
