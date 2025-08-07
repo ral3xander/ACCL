@@ -250,13 +250,16 @@ public:
     this->compression = compression;
   }
 
+
+public:
+  void destroy();
 protected:
   using WorkType =
       std::tuple<std::unique_ptr<WorkEntry>, c10::intrusive_ptr<WorkACCL>>;
   // Worker thread loop
   void runLoop();
   // Helper function that is called by the destructor
-  void destroy();
+
 
   c10::intrusive_ptr<Work>
   enqueue(std::unique_ptr<WorkEntry> entry,
