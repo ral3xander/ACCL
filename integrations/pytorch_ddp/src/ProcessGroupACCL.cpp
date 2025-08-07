@@ -728,16 +728,16 @@ void ProcessGroupACCL::run_broadcast(at::Tensor in_tensor,
   PRE_REQUEST(Broadcast, in_tensor);
   START_FINE(lib)
   auto req = accl->allreduce(*in_buf, *out_buf, imaginary_count,  ACCL::reduceFunction::SUM, GLOBAL_COMM, false, false);   
+  STOP_FINE(lib, in_tensor.nbytes())
   POST_REQUEST("broadcast", in_tensor.nbytes())   
 
   copy_back_tensor(in_tensor, out_buf, true, true);
   
   #else
   START_FINE(init)
-  int rounded_count = (in_tensor.numel() + ROUND_NR) & ~ROUND_NR;
  int rounded_count = (in_tensor.numel() + ROUND_NR - 1) & ~(ROUND_NR-1);
    //ACCL::debug("Rounded Count" + std::to_string(rounded_count)); 
-    
+  if (opts.rootRank == rank_){
       init_input_tensor(in_tensor, in_buf, true, false, opts.rootRank);
   }
   STOP_FINE(init, in_tensor.nbytes())
@@ -746,9 +746,10 @@ void ProcessGroupACCL::run_broadcast(at::Tensor in_tensor,
   c10::DeviceGuard guard(in_tensor.device());
   std::unique_lock<std::mutex> globalLock(pgGlobalMutex_);
   STOP_FINE(lock, in_tensor.nbytes())
-
   PRE_REQUEST(Broadcast, in_tensor)  
+  START_FINE(lib)
   auto req = accl->bcast(*in_buf, rounded_count, opts.rootRank);
+  STOP_FINE(lib, in_tensor.nbytes()) 
   POST_REQUEST("broadcast", in_tensor.nbytes()) 
   
   START_FINE(copy)
