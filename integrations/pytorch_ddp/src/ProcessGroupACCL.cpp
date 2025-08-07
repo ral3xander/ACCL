@@ -445,17 +445,20 @@ std::vector<ACCL::rank_t> convert_ranks(
 // just for the sa_handler
 std::unique_ptr<::ACCL::ACCL>* global_accl;  
 
-void accl_sa_handler(int)
+void accl_sa_handler(int signum)
 {
-	static bool once = true;
-	if(once) {
-		global_accl->reset();
-		// std::cout << "Error! Signal received. Finalizing MPI..." << std::endl;
-		// MPI_Finalize();
-		// std::cout << "Done. Terminating..." << std::endl;
-		once = false;
-	}
-	exit(EXIT_FAILURE);
+    std::cerr << "[ACCL] Received signal: " << signum << " (" << strsignal(signum) << ")" << std::endl;
+
+    static bool once = true;
+    if (once) {
+        global_accl->reset();
+      
+        std::cout << "Error! Signal received. Finalizing MPI..." << std::endl;
+		    MPI_Finalize();
+		    std::cout << "Done. Terminating..." << std::endl;
+        once = false;
+    }
+    exit(EXIT_FAILURE);
 }
 
 void ProcessGroupACCL::init_input_tensor(at::Tensor &tensor, std::unique_ptr<ACCL::Buffer<float>> &data, bool do_on_root, bool do_on_others, int opts_root_rank) {
