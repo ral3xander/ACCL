@@ -790,6 +790,7 @@ ProcessGroupACCL::broadcast(std::vector<at::Tensor> &tensors,
             run_broadcast(tensor.narrow(0, i, end), opts);
           }
         } else {
+          ACCL::debug("call broadcast, no segmentation");
           run_broadcast(tensor, opts);
         }
 	}
