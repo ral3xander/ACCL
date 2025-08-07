@@ -348,6 +348,11 @@ inline compressionFlags &operator|=(compressionFlags &lhs,
   return lhs;
 }
 
+inline compressionFlags operator&(compressionFlags lhs, compressionFlags rhs) {
+  return static_cast<compressionFlags>(static_cast<int>(lhs) &
+                                       static_cast<int>(rhs));
+}
+
 /**
  * ACCL error codes used internally.
  *
