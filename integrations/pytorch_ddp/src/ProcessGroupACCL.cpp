@@ -1564,9 +1564,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
            py::arg("xclbin") = std::string(),
            py::arg("device_index") = 0,  py::arg("nbufs") = 16,
            py::arg("bufsize") = 1024, py::arg("rsfec") = false)
-      .def("get_local_qp", &ProcessGroupACCL::get_local_qp, py::arg("rank"))
-      .def("set_remote_qp", &ProcessGroupACCL::set_remote_qp, py::arg("rank"),
-           py::arg("qp"))
       .def("initialize", &ProcessGroupACCL::initialize)
       .def("destroy", &ProcessGroupACCL::destroy)
       .def_property("compression", &ProcessGroupACCL::get_compression,
