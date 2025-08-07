@@ -1325,49 +1325,64 @@ c10::intrusive_ptr<Work> ProcessGroupACCL::alltoall_base(
 
     std::function<void(std::unique_ptr<WorkEntry>&)> runFunc =
         [opts, this](std::unique_ptr<WorkEntry>& entry) {
-          auto srctensor = (entry->src)[0];
-          auto dsttensor = (entry->dst)[0];
+      auto srctensor = (entry->src)[0];
+      auto dsttensor = (entry->dst)[0];
 
+      #if ALLTOALL_BASE_SIDESTEP
+        ACCL::debug("[AlltoAllBase] -- Sidestepped using OpenMPI --");
 
-          // c10::DeviceGuard guard(srctensor.device());
-          // std::unique_lock<std::mutex> globalLock(pgGlobalMutex_);
-          // Segment data if necessary
-      if (dsttensor.nbytes() > bufsize) {
+        c10::DeviceGuard guard(srctensor.device());
+        std::unique_lock<std::mutex> globalLock(pgGlobalMutex_);
 
-        // Split individual entries
-        size_t non_zero_dim_count = dsttensor.numel() / dsttensor.size(0);
-        size_t n = bufsize / dsttensor.itemsize() / size_ / non_zero_dim_count;
-        size_t entry_size = dsttensor.numel() / size_ / non_zero_dim_count;
-        for (size_t i = 0; i < entry_size; i += n) {
-            ACCL::debug("part " + std::to_string(i) + "!");
-            size_t end = std::min(n, static_cast<size_t>(entry_size) - i);
+        int64_t chunk_size = srctensor.numel() / size_;
+        MPI_CHECK(MPI_Alltoall(
+          srctensor.data_ptr(),
+          chunk_size,
+          mpiDatatype.at(srctensor.scalar_type()),
+          dsttensor.data_ptr(),
+          chunk_size,
+          mpiDatatype.at(dsttensor.scalar_type()),
+          MPI_COMM_WORLD));
+      #else
+        // c10::DeviceGuard guard(srctensor.device());
+        // std::unique_lock<std::mutex> globalLock(pgGlobalMutex_);
+        // Segment data if necessary
+        if (dsttensor.nbytes() > bufsize) {
+          // Split individual entries
+          size_t non_zero_dim_count = dsttensor.numel() / dsttensor.size(0);
+          size_t n = bufsize / dsttensor.itemsize() / size_ / non_zero_dim_count;
+          size_t entry_size = dsttensor.numel() / size_ / non_zero_dim_count;
+          for (size_t i = 0; i < entry_size; i += n) {
+              ACCL::debug("part " + std::to_string(i) + "!");
+              size_t end = std::min(n, static_cast<size_t>(entry_size) - i);
 
-            std::vector<at::Tensor> srctensorslices;
-            srctensorslices.reserve(size_);
-          for (int j = 0; j < size_; j++) {
-            int bufpos = j * entry_size;
-            srctensorslices.emplace_back(srctensor.narrow(0, i + bufpos, end));
-          }
-          std::vector<at::Tensor> dsttensorslices;
-          dsttensorslices.reserve(size_);
-          for (int j = 0; j < size_; j++) {
-            int bufpos = j * entry_size;
-            dsttensorslices.emplace_back(dsttensor.narrow(0, i + bufpos, end));
-          }
-          run_alltoall_vec(srctensorslices, dsttensorslices, opts);
+              std::vector<at::Tensor> srctensorslices;
+              srctensorslices.reserve(size_);
+            for (int j = 0; j < size_; j++) {
+              int bufpos = j * entry_size;
+              srctensorslices.emplace_back(srctensor.narrow(0, i + bufpos, end));
+            }
+            std::vector<at::Tensor> dsttensorslices;
+            dsttensorslices.reserve(size_);
+            for (int j = 0; j < size_; j++) {
+              int bufpos = j * entry_size;
+              dsttensorslices.emplace_back(dsttensor.narrow(0, i + bufpos, end));
+            }
+            run_alltoall_vec(srctensorslices, dsttensorslices, opts);
+              }
+        } else {
+          run_alltoall(srctensor, dsttensor, opts);
         }
-      } else {
-        run_alltoall(srctensor, dsttensor, opts);
-      }
-    };
-    std::vector<at::Tensor> inputTensors = {inputTensor};
-    std::vector<at::Tensor> outputTensors = {outputTensor};
-    auto entry = std::make_unique<WorkEntry>(&inputTensors, &outputTensors, std::move(runFunc));
-    return enqueue(
-        std::move(entry),
-        "accl:all_to_all_base", OpType::ALLTOALL_BASE,
-        c10::optional<std::vector<at::Tensor>>(inputTensors)
-    );
+  };
+  
+  std::vector<at::Tensor> inputTensors = {inputTensor};
+  std::vector<at::Tensor> outputTensors = {outputTensor};
+  auto entry = std::make_unique<WorkEntry>(&inputTensors, &outputTensors, std::move(runFunc));
+  return enqueue(
+      std::move(entry),
+      "accl:all_to_all_base", OpType::ALLTOALL_BASE,
+      c10::optional<std::vector<at::Tensor>>(inputTensors)
+  );
   } else {
     TORCH_CHECK(false, "ProcessGroupACCL does not support alltoallv required by alltoall_base");
   }
