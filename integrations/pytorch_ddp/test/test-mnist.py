@@ -7,6 +7,7 @@ import torch.nn as nn
 from torch import optim
 from torch.autograd import Variable
 import torch.distributed as dist
+import accl_process_group as accl
 
 
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -14,11 +15,22 @@ from torch.utils.data.distributed import DistributedSampler
 
 from mpi4py.MPI import COMM_WORLD as mpi
 
+from torch.distributed.algorithms.ddp_comm_hooks.default_hooks import allreduce_hook
+
 import argparse
 import os
 import sys
 import logging
 import time
+
+
+def sync_hook(state, bucket):
+    # Synchronize all ranks before all_reduce
+    mpi.Barrier()   
+    
+    # Proceed with default all_reduce
+    
+    return allreduce_hook(state, bucket)
 
 logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
 
@@ -27,16 +39,17 @@ logger = logging.getLogger(__name__)
 if "ACCL_DEBUG" in os.environ and os.environ["ACCL_DEBUG"]=="1":
     logger.setLevel(logging.DEBUG)
 else:
-    logger.setLevel(logging.WARNING)
+    #logger.setLevel(logging.WARNING)
+    logger.setLevel(logging.DEBUG)
 
-logger.debug(f"Python executable: {sys.executable}")
+logger.debug(f"Rank: {mpi.Get_rank()} Python executable: {sys.executable}")
 
 def create_accl_process_group(simulator, comms, host_file, fpga_file):
     logger.debug("creating accl process group")
-    #rxbufsize = 4096 * 1024
+    rxbufsize = 4194304
     if not simulator:
             #default from test.cpp
-            rxbufsize = 4096 * 1024
+            
             if host_file==None or fpga_file==None: sys.exit('Host and FPGA file need to be specified in hardware mode')
         
             with open(host_file, 'r') as hf:
@@ -50,9 +63,11 @@ def create_accl_process_group(simulator, comms, host_file, fpga_file):
             else:
                 ranks = [accl.Rank(a, start_port + i, 0, rxbufsize) for i, a in enumerate(fpga_ips)]
     else:
+        
         # Somehow the simulator gets stuck if I use the same rxbufsize
-        rxbufsize = 4096 * 40
+        
         ranks = [accl.Rank("127.0.0.1", 5500 + i, i, rxbufsize) for i in range(size)]
+    
 
     if comms == 'udp':
         design = accl.ACCLDesign.udp
@@ -61,7 +76,10 @@ def create_accl_process_group(simulator, comms, host_file, fpga_file):
     elif comms == 'cyt_rdma': # and not simulator:
         design = accl.ACCLDesign.cyt_rdma
 
-    accl.create_process_group(ranks, design, bufsize=rxbufsize, initialize=True, simulation=args.simulator)
+    mpi.Barrier()
+    logger.debug(f'Creating PG: \n Ranks: {ranks} \n Design: {design} \n Bufsize: {rxbufsize} \n Simulation: {simulator}')
+    accl.create_process_group(ranks, design, bufsize=rxbufsize , nbufs=16, initialize=True, simulation=simulator)
+    
 
 
 class CNN(nn.Module):
@@ -93,8 +111,8 @@ class CNN(nn.Module):
         output = self.out(x)
         return output, x    # return x for visualization
 
-def train(num_epochs, cnn, loaders):
-
+def train(num_epochs, cnn, loaders, profiler=None):
+    logger.debug("Start training")
     start_time_train = time.perf_counter()
     
     cnn.train()
@@ -105,9 +123,12 @@ def train(num_epochs, cnn, loaders):
     optimizer = optim.Adam(cnn.parameters(), lr = 0.01)   
 
     for epoch in range(num_epochs):
+        start_time = time.perf_counter()
         for i, (images, labels) in enumerate(loaders['train']):
-            p.step()
-            if (i-1) % 100 == 0 or i == 0: start_time = time.perf_counter()
+            
+            if profiler:
+                p.step()
+
             # gives batch data, normalize x when iterate train_loader
             b_x = Variable(images)   # batch x
             b_y = Variable(labels)   # batch y
@@ -123,17 +144,15 @@ def train(num_epochs, cnn, loaders):
             # apply gradients             
             optimizer.step()                
             
-            if (i+1) % 100 == 0:
-            
-                end_time = time.perf_counter()
-                measured_time = (end_time - start_time)
-                logger.debug ('rank: {} Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}, Time(s): {}' 
-                       .format(mpi.Get_rank(), epoch + 1, num_epochs, i + 1, total_step, loss.item(), measured_time))
+        end_time = time.perf_counter()
+        measured_time = (end_time - start_time)
+        logger.debug ('rank: {} Epoch [{}/{}], Loss: {:.4f}, Time(s): {}'
+                      .format(mpi.Get_rank(), epoch + 1, num_epochs, loss.item(), measured_time))
 
     end_time_train = time.perf_counter()
     measured_time_train = (end_time_train - start_time_train)
 
-    print('Total train time: ' + str(measured_time_train))
+    logger.debug('Total train time: ' + str(measured_time_train))
         
 def test():
     # Test the model
@@ -143,7 +162,6 @@ def test():
         correct = 0
         total = 0
         for images, labels in loaders['test']:
-            p.step()
             test_output, last_layer = cnn(images)
             pred_y = torch.max(test_output, 1)[1].data.squeeze()
             correct_current = (pred_y == labels).sum().item()
@@ -156,16 +174,12 @@ def test():
     end_time_test = time.perf_counter()
     measured_time_test = (end_time_test - start_time_test)
 
-    print('Total test time: ' + str(measured_time_test))            
-    print(f'Total accuracy: {correct}/{total} {correct/float(total)}')
+    logger.debug('Total test time: ' + str(measured_time_test))            
+    logger.debug(f'Total accuracy: {correct}/{total} {correct/float(total)}')
     
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-
-    parser.add_argument("-n", type=int, default=1)
-    parser.add_argument("-d", type=bool, default=None)
-
     parser.add_argument('-b', '--backend', choices=['accl', 'mpi'], default='mpi', help='Chose backend for collectives, either accl with fpga hardware support or software mpi')
     parser.add_argument('-s', '--simulator', action='store_true', default=False, help='Use simulation instead of hardware')
     parser.add_argument('-c', '--comms', choices=['udp', 'tcp', 'cyt_rdma', 'mpi'], default='cyt_rdma', help='Run tests over specified communication backend')
@@ -176,14 +190,6 @@ if __name__ == "__main__":
     parser.add_argument('-p','--master-port', type=str)
     
     args = parser.parse_args()
-
-
-    if args.n == 1 and args.d == None :
-        print("only one machine specified. Assuming Non distributed setup")
-        args.d = False
-    elif args.n > 1 and args.d == None:
-        print("Assung DDP setup")
-        args.d = True
 
 
     host_file = args.host_file
@@ -201,16 +207,18 @@ if __name__ == "__main__":
 
     rank = mpi.Get_rank()
     size = mpi.Get_size()
-
-    if args.d:
+    
+    if size > 1:
         if (args.backend == 'mpi'):
             logger.debug("Starting mpi distributed")
             dist.init_process_group("mpi", rank=rank, world_size=size)
         else:
             logger.debug("Starting ACCL distributed")
-            import accl_process_group as accl
+            
             create_accl_process_group(args.simulator, args.comms, host_file, fpga_file)
+            logger.debug("Start initialising PG")
             dist.init_process_group("ACCL", rank=rank, world_size=size)
+            logger.debug("Finished initialising PG")
     else:
         logger.debug("starting local")
     device = 'cpu'
@@ -227,41 +235,34 @@ if __name__ == "__main__":
         transform = ToTensor()
     )
 
-    if args.d : sampler = DistributedSampler
+    if size > 1 : sampler = DistributedSampler
     else : sampler = lambda x : None
-    
+    #sampler=sampler(train_data))
     loaders = {
         'train' : torch.utils.data.DataLoader(train_data, 
-                                              batch_size=100, 
+                                              batch_size=128, 
                                               shuffle=False,
-                                              sampler=sampler(train_data)),
+                                            ),
         'test'  : torch.utils.data.DataLoader(test_data, 
-                                              batch_size=100, 
-                                              shuffle=False,
-                                              sampler=sampler(test_data)),
+                                              batch_size=128, 
+                                              shuffle=False),
     }
-
-    cnn = CNN()
-    if args.d : cnn = DDP(cnn, bucket_cap_mb=1)
-
+    #bucket_cap_mb=1
+    cnn = CNN() 
+    if size > 1 : cnn = DDP(cnn, bucket_cap_mb=1)
+    #cnn.register_comm_hook(state=None, hook=sync_hook)
     loss_func = nn.CrossEntropyLoss()   
-
-    num_epochs = 3
-
-    print("starting training")
-    logger.debug("starting training")
-    logger.debug(rank)
-    logger.debug(size)
-    print(rank)
-    print(size)
+    num_epochs = 100
+    profile = False
     
     schedule = torch.profiler.schedule(
-        wait=1,
-        warmup=1,
-        active=10,
-        repeat=3
+        wait=0,
+        warmup=0,
+        active=200,
+        repeat=1
     )
-    if True:
+
+    if profile:
         with torch.profiler.profile(
                 activities=[torch.profiler.ProfilerActivity.CPU],
                 schedule=schedule,
@@ -270,9 +271,27 @@ if __name__ == "__main__":
                 with_stack=True
         ) as p:
 
-        
-            train(num_epochs, cnn, loaders)
+            train(num_epochs, cnn, loaders, p)
             test()
+    else:
+        logger.debug("Start training without profiler")
+        train(num_epochs, cnn, loaders)
+        test()
+        #shape = (28938,)
+        #rand_torch = torch.rand(shape, dtype=torch.float32)
+        #for i in range(2350):
+            #if rank == 0:
+                #time.sleep(0.1)
+            #rand_torch = torch.rand(shape, dtype=torch.float32)
+            #x = rand_torch.clone()
+            #dist.all_reduce(x, dist.ReduceOp.SUM)
 
-
-    if args.d : dist.destroy_process_group()
+    if size > 1: 
+        print("Dist.destroy_process_group")
+        #Not sure which one needed but with no synchronisation destroy_process_group which should call ACCL PG destroy() could fail
+        dist.barrier()
+        mpi.Barrier()
+        dist.destroy_process_group()
+        
+	   
+	   
