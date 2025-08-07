@@ -36,7 +36,7 @@ else:
 
 def create_process_group(
         ranks: list[Rank], design: ACCLDesign,
-        *, nbufs: int = 16, bufsize: int = 1024,
+        *, nbufs: int = 16, bufsize: int = 4194304,
         compression: Optional[dict[DataType, DataType]] = None,
         p2p_enabled: bool = False, profiling_ranks: Optional[list[int]] = None,
         profiling_timeout: float = 0.0, rsfec: bool = False,
@@ -94,19 +94,6 @@ def initialize() -> None:
                            "is created.")
     process_group.initialize()
 
-def get_local_qp(rank: int) -> list[int]:
-    logger.debug('Get_local_qp called')
-    if process_group is None:
-        raise RuntimeError("Cannot get local qp before ACCL ProcessGroup "
-                           "is created.")
-    return process_group.get_local_qp(rank)
-
-def set_remote_qp(rank: int, qp: list[int]) -> None:
-    logger.debug('Set_remote_qp called')
-    if process_group is None:
-        raise RuntimeError("Cannot set remote qp before ACCL ProcessGroup "
-                           "is created.")
-    return process_group.set_remote_qp(rank, qp)
 
 def set_compression(compression: dict[DataType, DataType]):
     logger.debug(f'Setting compression to {compression}')
@@ -121,3 +108,6 @@ def get_compression() -> dict[DataType, DataType]:
         raise RuntimeError("Cannot get compression before ACCL ProcessGroup "
                            "is initialized.")
     return process_group.compression
+
+def destroy():
+    process_group.destroy()

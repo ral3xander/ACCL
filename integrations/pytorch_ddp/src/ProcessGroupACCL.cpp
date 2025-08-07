@@ -1563,6 +1563,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       .def("set_remote_qp", &ProcessGroupACCL::set_remote_qp, py::arg("rank"),
            py::arg("qp"))
       .def("initialize", &ProcessGroupACCL::initialize)
+      .def("destroy", &ProcessGroupACCL::destroy)
       .def_property("compression", &ProcessGroupACCL::get_compression,
                     &ProcessGroupACCL::set_compression);
 }
