@@ -187,6 +187,11 @@ template <typename qtype> struct FPGAQueue {
     return queue.empty();
   }
 
+  size_t size() {
+  std::lock_guard<std::mutex> lk(queue_mtx);
+  return queue.size();
+  }
+
   /**
    * Tries to set the execution
    *
