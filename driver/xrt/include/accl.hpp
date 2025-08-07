@@ -651,7 +651,7 @@ public:
   /**
    * Performs an alltoall shuffle operation on the FPGA.
    *
-   * @param sendbuf        Buffer of count elements that contains the data to
+   * @param sendbuf        Buffer of elements that contains the data to
    *                       be shuffled. Create a buffer using ACCL::create_buffer.
    * @param recvbuf        Buffer of count × world size elements to where the
    *                       data should be gathered. Create a buffer using
