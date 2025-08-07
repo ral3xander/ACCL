@@ -751,8 +751,8 @@ void ProcessGroupACCL::run_broadcast(at::Tensor in_tensor,
   #else
   START_FINE(init)
   int rounded_count = (in_tensor.numel() + ROUND_NR) & ~ROUND_NR;
-  
-  if (opts.rootRank == rank_){
+ int rounded_count = (in_tensor.numel() + ROUND_NR - 1) & ~(ROUND_NR-1);
+   //ACCL::debug("Rounded Count" + std::to_string(rounded_count)); 
     
       init_input_tensor(in_tensor, in_buf, true, false, opts.rootRank);
   }
