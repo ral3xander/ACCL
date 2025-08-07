@@ -23,7 +23,7 @@ import sys
 import os
 from pathlib import Path
 
-_CURRENT_PYTORCH = '2.1'
+_CURRENT_PYTORCH = '2.7'
 CURRENT_PYTORCH_VERSION = f'v{_CURRENT_PYTORCH}'
 CURRENT_PYTORCH_BRANCH = f'release/{_CURRENT_PYTORCH}'
 
