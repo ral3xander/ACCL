@@ -854,25 +854,15 @@ ACCLRequest *ACCL::allreduce(BaseBuffer &sendbuf,
   CCLO::Options options{};
 
   const Communicator &communicator = communicators[comm_id];
-
-  /*
-  if (run_async == true) {
-    std::cerr << "ACCL: async run returns data on FPGA, user must "
-                 "sync_from_device() after waiting"
-              << std::endl;
-  }
-*/
+                
+  
   if (count == 0) {
     std::cerr << "ACCL: zero size buffer" << std::endl;
     return nullptr;
   }
-/*
-  if (from_fpga == false) {
-    auto slice = sendbuf.slice(0, count);
-    slice->sync_to_device();
-  }
-*/
-
+ 
+  //sendbuf.sync_to_device();
+  
   options.scenario = operation::allreduce;
   options.comm = communicator.communicators_addr();
   options.addr_0 = &sendbuf;
@@ -886,19 +876,14 @@ ACCLRequest *ACCL::allreduce(BaseBuffer &sendbuf,
   ACCLRequest *handle = call_async(options);
   STOP_FINE(async_call, count * 4)
   
-
+  
   if (!run_async) {
-    //std::cerr << "reached wait(handle)" << std::endl;
     START_FINE(wait)
     wait(handle);
     STOP_FINE(wait, count * 4)
-    //std::cerr << "finished wait(handle)" << std::endl;
-    /*
-    if (to_fpga == false) {
-      auto slice = recvbuf.slice(0, count);
-      slice->sync_from_device();
-    }
-    */
+    
+    //recvbuf.sync_from_device();
+    
     check_return_value("allreduce", handle);
   }
 
