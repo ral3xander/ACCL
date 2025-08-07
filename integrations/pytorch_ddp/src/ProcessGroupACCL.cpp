@@ -834,7 +834,8 @@ void ProcessGroupACCL::run_allreduce(at::Tensor in_tensor,
   START_FINE(lock)
   c10::DeviceGuard guard(in_tensor.device());
   std::unique_lock<std::mutex> globalLock(pgGlobalMutex_);
-  int rounded_count = (in_tensor.numel() + ROUND_NR) & ~ROUND_NR;
+  int rounded_count = (in_tensor.numel() + ROUND_NR - 1) & ~(ROUND_NR-1);
+  ACCL::debug("Rounded Count" + std::to_string(rounded_count)); 
   STOP_FINE(lock, in_tensor.nbytes())
   
   //print_state("Rank " + std::to_string(rank_) + ": BEFORE ACCL_ALLREDUCE", in_tensor, in_buf, out_buf);
