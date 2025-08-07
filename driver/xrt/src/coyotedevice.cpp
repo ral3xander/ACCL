@@ -311,17 +311,17 @@ void CoyoteRequest::start() {
   // start the kernel
   
   coyote_proc->setCSR(0x1U, (OFFSET_HOSTCTRL + HOSTCTRL_ADDR::AP_CTRL)>>2);
-   STOP_FINE(startTotal, options.count * 4)
+  STOP_FINE(startTotal, options.count * 4)
 }
 
 void CoyoteRequest::wait_kernel() {
   auto coyote_proc = reinterpret_cast<ACCL::CoyoteDevice *>(cclo())->get_device();
   uint32_t is_done = 0;
-  int counter = 0;
+  int counter = 1;
   while (!is_done) {
     uint32_t regi = coyote_proc->getCSR((OFFSET_HOSTCTRL + HOSTCTRL_ADDR::AP_CTRL)>>2);
     is_done = (regi >> 1) & 0x1; // get bit 1 of AP_CTRL register
-    if (counter++ % 1000 == 0 && counter < 10'000) { // print every 1000 iterations
+    if (counter++ % 100000 == 0 && counter < 101'000) { // print every 1000 iterations
       std::cerr << "[wait_kernel] AP_CTRL=0x" << std::hex << regi << std::endl;
     }
   }
@@ -500,6 +500,7 @@ void CoyoteDevice::launch_request() {
     req->set_status(operationStatus::EXECUTING);
     //std::cerr << "before calling start in launch request" << std::endl;
     START_FINE(start_request)
+    //std::cerr << "Queue size: " << queue.size() << std::endl;
     req->start();
     STOP_FINE(start_request, 116736)
     //std::cerr << "after calling start in launch request" << std::endl;
