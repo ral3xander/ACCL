@@ -1474,9 +1474,22 @@ ProcessGroupACCL::recvAnysource(std::vector<at::Tensor> &tensors, int tag) {
   TORCH_CHECK(false, "ProcessGroupACCL does not support recvAnysource");
 }
 
-c10::intrusive_ptr<Work>
-ProcessGroupACCL::barrier(const BarrierOptions &opts) {
-  accl->barrier();
+
+c10::intrusive_ptr<Work> ProcessGroupACCL::barrier(const BarrierOptions &opts) {
+  std::function<void(std::unique_ptr<WorkEntry> &)> runFunc =
+      [this](std::unique_ptr<WorkEntry> &entry) {
+        c10::DeviceGuard guard(c10::Device(c10::DeviceType::CPU)); // barrier is CPU-side
+        std::unique_lock<std::mutex> globalLock(pgGlobalMutex_);
+        ACCL::debug("[barrier] calling ACCL barrier()");
+        accl->barrier();
+        ACCL::debug("[barrier] returned from ACCL barrier()");
+      };
+
+  // Dummy input/output needed for WorkEntry; barrier has no tensors
+  std::vector<at::Tensor> dummyTensorVec;
+
+  auto entry = std::make_unique<WorkEntry>(&dummyTensorVec, &dummyTensorVec, std::move(runFunc));
+  return enqueue(std::move(entry), "accl::barrier", OpType::BARRIER, c10::nullopt);
 }
 
 c10::intrusive_ptr<Work>
