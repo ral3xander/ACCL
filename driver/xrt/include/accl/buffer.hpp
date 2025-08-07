@@ -206,7 +206,7 @@ public:
 
   dtype &operator[](size_t i) const { return this->_buffer[i]; }
 
-protected:
+public:
   dtype *_buffer;
   const size_t _length;
 
