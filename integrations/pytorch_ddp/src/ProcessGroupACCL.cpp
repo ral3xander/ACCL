@@ -223,9 +223,11 @@ std::map<at::ScalarType, ACCL::dataType> acclDatatype = {
 void checkSingleTensorHelper(const at::Tensor &tensor) {
   if (!tensor.is_contiguous()) {
     TORCH_CHECK(false, "input tensor has to be contiguous");
+    ACCL::debug("Error: not contiguous");
   }
   if (tensor.is_sparse()) {
     TORCH_CHECK(false, "input tensor has to be dense");
+    ACCL::debug("Error: not sparse");
   }
 }
 
@@ -513,11 +515,11 @@ ProcessGroupACCL::ProcessGroupACCL(
     int device_index, int nbufs, uint64_t bufsize, bool rsfec)
     : ProcessGroup(rank, size), store_(store), stop_(false),
       device_index_(device_index), nbufs_(nbufs), bufsize_(bufsize),
-      rsfec_(rsfec), simulator_(false), xclbin_(xclbin),
+      rsfec_(rsfec), simulator_(simulator), xclbin_(xclbin),
       bufsize(bufsize), p2p_enabled(p2p_enabled),
-      coyote_enabled(true
-        /*design == accl_network_utils::acclDesign::CYT_RDMA
-        || design == accl_network_utils::acclDesign::CYT_TCP*/),
+      coyote_enabled(
+        design == accl_network_utils::acclDesign::CYT_RDMA
+        || design == accl_network_utils::acclDesign::CYT_TCP),
       compression(compression), initialized(false) {
 
   ACCL::debug("Process Group constructor called");
@@ -584,7 +586,7 @@ void ProcessGroupACCL::initialize() {
     throw std::runtime_error("Already initialized process group");
   }
 
-  if (true) {
+  if (coyote_enabled && !simulator_) {
 
     accl = std::make_unique<ACCL::ACCL>(cyt_device);
     global_accl = &accl;
@@ -601,22 +603,22 @@ void ProcessGroupACCL::initialize() {
 
 
   } else {
-    // ACCL::debug(std::string("Error XRT initialization deprecated"));
+    ACCL::debug(std::string("Error XRT initialization deprecated"));
     accl = accl_network_utils::initialize_accl(ranks_, rank_,
                                                simulator_, design_, xrt_device,
                                                xclbin_, nbufs_, bufsize, 0,
                                                rsfec_);
     ACCL::debug(std::string("Setting timeout and Threshold"));
-    accl->set_timeout(1e6);
+    accl->set_timeout(1e8);
     // accl->set_rendezvous_threshold(16*1024);
                                       
     int devicemem = accl->devicemem();
 
   }
-
+ 
   in_buf = accl->create_buffer_host<float>(bufsize/sizeof(float), ACCL::dataType::float32);
   out_buf = accl->create_buffer_host<float>(bufsize/sizeof(float), ACCL::dataType::float32);
-  
+
   accl->set_timeout(1e8);
   // Start the worker thread accepting ACCL calls
   workerThread_ = std::thread(&ProcessGroupACCL::runLoop, this);
@@ -624,9 +626,11 @@ void ProcessGroupACCL::initialize() {
   ACCL::debug(std::string("Finished Initialization"));
 }
 
-ProcessGroupACCL::~ProcessGroupACCL() { destroy(); }
+ProcessGroupACCL::~ProcessGroupACCL() {destroy();}
+
 
 void ProcessGroupACCL::destroy() {
+  ACCL::debug("Starting destroy");
   std::unique_lock<std::mutex> lock(pgMutex_);
   queueConsumeCV_.wait(lock, [&] { return queue_.empty(); });
 
@@ -645,9 +649,13 @@ void ProcessGroupACCL::destroy() {
 
   // Join the single worker thread
   workerThread_.join();
+
+   accl.reset();
+  //accl->deinit();
 }
 
 void ProcessGroupACCL::abort() {
+  ACCL::debug("starting abort");
   destroy();
   accl->deinit();
   exit(EXIT_FAILURE);
@@ -732,7 +740,9 @@ void ProcessGroupACCL::run_broadcast(at::Tensor in_tensor,
   std::unique_lock<std::mutex> globalLock(pgGlobalMutex_);
   STOP_FINE(lock, in_tensor.nbytes()) 
 
+
   PRE_REQUEST(Broadcast, in_tensor);
+  START_FINE(lib)
   auto req = accl->allreduce(*in_buf, *out_buf, imaginary_count,  ACCL::reduceFunction::SUM, GLOBAL_COMM, false, false);   
   POST_REQUEST("broadcast", in_tensor.nbytes())   
 
