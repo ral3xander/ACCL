@@ -841,22 +841,17 @@ void ProcessGroupACCL::run_allreduce(at::Tensor in_tensor,
   //print_state("Rank " + std::to_string(rank_) + ": BEFORE ACCL_ALLREDUCE", in_tensor, in_buf, out_buf);
   
   PRE_REQUEST(Allreduce,in_tensor);
-  MPI_Barrier(MPI_COMM_WORLD);
-  auto now = std::chrono::high_resolution_clock::now();
-  auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
-  ACCL::debug("Start lib" + std::to_string(nanos));    
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
   START_FINE(lib) 
-  auto req = accl->allreduce(*in_buf, *in_buf, rounded_count, acclOp.at(opts.reduceOp));
-  MPI_Barrier(MPI_COMM_WORLD);
-  now = std::chrono::high_resolution_clock::now();
-  nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
-  ACCL::debug("End lib" + std::to_string(nanos)); 
+  auto req = accl->allreduce(*in_buf, *out_buf, rounded_count, acclOp.at(opts.reduceOp));
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
   STOP_FINE(lib, in_tensor.nbytes()) 
 
   POST_REQUEST("allreduce", in_tensor.nbytes())  
   //print_state("Rank " + std::to_string(rank_) + ": AFTER ACCL_ALLREDUCE", in_tensor, in_buf, out_buf); 
   START_FINE(copy)
-  //copy_back_tensor(in_tensor, out_buf, true, true);
+  copy_back_tensor(in_tensor, out_buf, true, true);
   STOP_FINE(copy, in_tensor.nbytes())
   //print_state("Rank " + std::to_string(rank_) + ": AFTER COPY_BACK_TENSOR", in_tensor, in_buf, out_buf);
 }
