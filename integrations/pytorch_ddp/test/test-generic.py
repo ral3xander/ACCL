@@ -14,7 +14,6 @@
 #  limitations under the License.
 #
 # *****************************************************************************/
-
 from __future__ import annotations
 from typing import Optional
 import numpy as np
@@ -32,6 +31,10 @@ import accl_process_group as accl
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.nn as nn
 import torch.optim as optim
+
+import torchvision
+import torchvision.transforms as transforms
+import torchvision.models as models
 
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -52,8 +55,7 @@ size = 0
 x = 1024
 y = 1
 
-seed = 48
-torch.manual_seed(seed)
+
 
 count = x * y
 num_el = x * y
@@ -114,6 +116,8 @@ def test_broadcast(numel, testtype):
         logger.debug("Test broadcast finished!")
 
 def test_allreduce(numel, testtype):
+    seed = 1234  # Choose a constant seed
+    torch.manual_seed(seed)
 
     global num_errors
 
@@ -130,7 +134,7 @@ def test_allreduce(numel, testtype):
     
         # shape = (320001,)
         x = rand_torch.clone()
-
+     
         mpi.Barrier()            
         
         start_time = time.perf_counter()
@@ -147,7 +151,7 @@ def test_allreduce(numel, testtype):
         logger.debug("Directly measured time us 1:" + str(measured_time))            
         
         mpi.Barrier()
-
+    
         try:
             np.testing.assert_allclose(x, rand_torch * size)
         except AssertionError as e:
@@ -381,85 +385,88 @@ def test_sendrcv(numel):
         logger.debug("Test Sendrcv finished!")
 
 
+
+def train(model, loaders, optimizer, loss_fn, epochs, profiler=None):
+    start_time_train = time.perf_counter()
+    model.train()
+    total_step = len(loaders['train'])
+    for epoch in range(epochs):
         
-class ToyModel(nn.Module):
-    def __init__(self):
-        super(ToyModel, self).__init__()
-        self.net1 = nn.Linear(10, 10)
-        self.relu = nn.ReLU()
-        self.net2 = nn.Linear(10, 5)
-
-    def forward(self, x):
-        return self.net2(self.relu(self.net1(x)))
-
-class MyTrainDataset(Dataset):
-    def __init__(self, size):
-        self.size = size
-
-        self.data = []
-        for i in range(size):
-            in_feature = torch.zeros(10)
-            out_feature = torch.zeros(5)
-            for j in range(10):
-                in_feature[j] = float((i^2  + j) % 5)
-                # try to learn a linear function of the input, to make sure it's parameterizable
-                out_feature[j//2] = out_feature[j//2] + float(((i^2 + j) % 5) * 3 * ( -1 ** (j % 2)))
-            self.data.append((in_feature, out_feature))
-                
-                
+        start_time = time.perf_counter()
+        for i, (images, labels) in enumerate(loaders['train']):
         
-
-    def __len__(self):
-        return self.size
-    
-    def __getitem__(self, index):
-        return self.data[index]
-    
-def prepare_dataloader(dataset: Dataset, batch_size: int):
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        pin_memory=True,
-        shuffle=False,
-        sampler=DistributedSampler(dataset)
-    )    
-    
-def demo_basic(rank: int):
-
-    with torch.profiler.record_function("basic 2 Layer NN"):
-        model = ToyModel()
-        ddp_model = DDP(model, bucket_cap_mb=4)
-        # ddp_model = DDP(model, bucket_cap_mb=4, broadcast_buffers=False)
-        
-        train_set = MyTrainDataset(2048)  # load your dataset
-        batch_size=64
-        train_data = prepare_dataloader(train_set, batch_size)
-
-        loss_fn = nn.MSELoss()
-        optimizer = optim.Adam(ddp_model.parameters(), lr=0.005)
-
-        max_epochs = 10
-        for epoch in range(max_epochs):
-            batch_size = len(next(iter(train_data))[0])
-            train_data.sampler.set_epoch(epoch)
-            for x, y in train_data:
-
-                optimizer.zero_grad()
-                outputs = ddp_model(x)
-                loss = loss_fn(outputs, y)
-                loss.backward()
-                optimizer.step()
-
-            print(f"Rank {rank}: Epoch {epoch} | Batchsize: {batch_size} | Steps: {len(train_data)} | Loss: {loss}")
+            if profiler: 
+                profiler.step()
+            outputs = model(images)
+            loss = loss_fn(outputs, labels)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()  
+        end_time = time.perf_counter()
+        measured_time = (end_time - start_time)
+        logger.debug ('rank: {} Epoch [{}/{}], Loss: {:.4f}, Time(s): {}' 
+                .format(mpi.Get_rank(), epoch + 1, epochs, loss.item(), measured_time))
+    end_time_train = time.perf_counter()
+    measured_time_train = (end_time_train - start_time_train)
+    logger.debug('Total train time: ' + str(measured_time_train))
 
 
-        print("finished training")
-        mpi.Barrier()
-    # print("final params:")
-    # print(ddp_model)
-    # dist.destroy_process_group()
+def test(model, loaders):
+    start_time_test = time.perf_counter()
+    model.eval()
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for images, labels in loaders['test']:
+            outputs = model(images)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
 
-def start_test(comms: str, simulator: bool, host_file: str=None, fpga_file: str=None, ma: str="localhost", mp: str="30505"):
+    end_time_test = time.perf_counter()
+    measured_time_test = (end_time_test - start_time_test)
+    logger.debug('Total test time: ' + str(measured_time_test))            
+    logger.debug(f'Total accuracy: {correct}/{total} {correct/float(total)}')  
+
+
+def test_resNet18():
+        transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        ])
+
+        trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+        testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+
+        reduced_fraction = 0.01
+        subset_size_train = int(reduced_fraction * len(trainset))
+        subset_size_test = int(reduced_fraction * len(testset))
+
+        trainset = torch.utils.data.Subset(trainset, range(subset_size_train))
+        testset = torch.utils.data.Subset(testset, range(subset_size_test))
+
+        train_sampler = DistributedSampler(trainset) if size > 1 else None
+
+        loaders = {
+            'train' : DataLoader(trainset, batch_size=128, shuffle=(train_sampler is None), sampler=train_sampler),
+            'test'  : DataLoader(testset, batch_size=128, shuffle=False),
+        }
+
+        model = models.resnet18(num_classes=10)
+        model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        model.maxpool = nn.Identity()  # Remove initial max pooling for CIFAR10 resolution
+        model = DDP(model, bucket_cap_mb=1)
+
+        epochs = 1
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+        loss_fn = nn.CrossEntropyLoss()
+
+        train(model, loaders, optimizer, loss_fn, epochs)
+        test(model, loaders)
+
+
+def start_test(backend: str, comms: str, simulator: bool, host_file: str=None, fpga_file: str=None, ma: str="localhost", mp: str="30505"):
+   
     global rank, size
     if ma==None:
         ma = "localhost"
@@ -517,30 +524,108 @@ Master address: {ma}:{mp}, Start port for FPGA: {start_port}")
 
 
     # dist.init_process_group("mpi", rank=rank, world_size=size)
+    if (simulator):
+        logger.debug(f"Creating AcclPG with {ranks} ranks, {design} design,  simulation: {simulator}")
+        accl.create_process_group(ranks, design, bufsize= rxbufsize , nbufs=16, initialize=True, simulation=simulator)
+        logger.debug('Initialising accl backend')
+        dist.init_process_group("ACCL", rank=rank, world_size=size)
+    elif (backend == 'accl'):
+        logger.debug(f"Creating AcclPG with {ranks} ranks, {design} design,  simulation: {simulator}")
+        accl.create_process_group(ranks, design, bufsize= 4194304 , nbufs=16, initialize=True, simulation=simulator)
+        logger.debug('Initialising accl backend')
+        dist.init_process_group("ACCL", rank=rank, world_size=size)
 
-    accl.create_process_group(ranks, design, bufsize= 2048 , nbufs=1, initialize=True, simulation=simulator)
-    dist.init_process_group("ACCL", rank=rank, world_size=size)
+    else:
+        logger.debug('Initialising mpi backend')
+        dist.init_process_group("mpi", rank=rank, world_size=size)
+
     
     global num_errors
     num_errors = 0
 
-    schedule = torch.profiler.schedule(
-        wait=1,
-        warmup=2,
-        active=5,
-    )
-    
-    # with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], profile_memory=True, schedule=schedule, record_shapes=True) as prof:
-
-    # generic testing
-    num = 16
-    for n in range(1):
-        test_allreduce(num, torch.float32)
-        test_broadcast(num, torch.float32)
-        test_sendrcv(num)
-    for n in range(0):
+    if False:
+        schedule = torch.profiler.schedule(
+            wait=1,
+            warmup=1,
+            active=1,
+            repeat = 1,
+        )
         
-        test_broadcast(num, torch.float32)
+
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], 
+                    profile_memory=True, schedule=schedule, record_shapes=True, on_trace_ready=torch.profiler.tensorboard_trace_handler('./accl_log/profiler_log')) as prof:
+            prof.step()
+        # generic testing
+        #test_resNet18()
+    
+    
+    
+    
+    num = 32
+    for n in range(0):
+        test_allreduce(25524288, torch.float32)
+        #test_allreduce(23654500, torch.float32)
+        #test_allreduce(131072, torch.float32)
+        #test_allreduce(64, torch.float32)
+        #test_allreduce(2360, torch.float32)
+        #test_allreduce(2360, torch.float32)
+        #test_allreduce(2360, torch.float32)
+        #test_broadcast(7000000, torch.float32)
+        #test_broadcast(1, torch.float32)
+        #test_broadcast(26, torch.float32)
+
+
+    #Resnet18 sim
+
+    #setup
+
+    #batches
+    for n in range(0):
+
+        print()
+        test_allreduce(2365450, torch.float32)
+        test_allreduce(2360320, torch.float32)
+        test_allreduce(2492416, torch.float32)
+        test_allreduce(1180672, torch.float32)
+        test_allreduce(590336, torch.float32)
+        test_allreduce(590336, torch.float32)
+        test_allreduce(623616, torch.float32)
+        test_allreduce(295424, torch.float32)
+        test_allreduce(295424, torch.float32)
+        test_allreduce(267136, torch.float32)
+        test_allreduce(112832, torch.float32)
+    
+    for n in range(0):
+
+        print()
+        #19
+        test_allreduce(2490368, torch.float32)
+        test_allreduce(2490368, torch.float32)
+        #20
+        test_allreduce(2621440, torch.float32)
+        #10
+        test_allreduce(1310720, torch.float32)
+        #5
+        test_allreduce(655360, torch.float32)
+        test_allreduce(655360, torch.float32)
+        test_allreduce(655360, torch.float32)
+        #3
+        test_allreduce(393216, torch.float32)
+        test_allreduce(393216, torch.float32)
+        test_allreduce(393216, torch.float32)
+        #1
+        test_allreduce(131072, torch.float32)
+    
+    for n in range(0):
+        for i in range(93):
+            test_allreduce(131072, torch.float32)
+    
+    for n in range(0):
+        for i in range(93):
+            test_allreduce(162144, torch.float32)
+
+
+    for n in range(0):
         test_allreduce(num, torch.float32)
         test_reduce(num)
         test_allgather(num, torch.float32)
@@ -549,36 +634,14 @@ Master address: {ma}:{mp}, Start port for FPGA: {start_port}")
         test_alltoall(num)
         test_sendrcv(num)
         
-    # prof.step()
+    for n in range(1):
+        #test_allreduce(28928, torch.float32)
+        #test_allreduce(524288, torch.float32)
+        test_allreduce(112832, torch.float32)
+        #test_allreduce(1050576, torch.float32)
+        #test_alltoall(2024, torch.float32)
 
-    # to simulate resnet behaviour(check to make sure it's the same as in your resnet config)
-    # for i in range(10):
-    test_resnet_sim = False
-    if test_resnet_sim:
-        test_allreduce(256, torch.int32)
-        test_allreduce(256, torch.int64)
-        test_broadcast(256, torch.float32)
-        
-        for i in range(5):
-            test_allreduce(1000, torch.float32)
-            test_allreduce(2052096, torch.float32)
-            test_allreduce(1049600, torch.float32)
-            test_broadcast(256 * 1024, torch.float32)
-            test_allreduce(256 * 1024, torch.float32)        
-            test_broadcast(53, torch.int64)
-            test_broadcast(53120, torch.float32)
-            test_broadcast(53, torch.int64)
-            test_broadcast(162, torch.int32)
-            test_broadcast(25, torch.int32)
-            test_allreduce(8196000, torch.float32)
-
-    test_NN = False
-    if test_NN:
-        demo_basic(rank)
-
-
-    mpi.Barrier()
-
+    
     if num_errors == 0:
         print("======== Successfully Finished testing======")
         logger.debug("======== Successfully Finished testing======")
@@ -587,15 +650,28 @@ Master address: {ma}:{mp}, Start port for FPGA: {start_port}")
         logger.debug(f"!!!!!!!! - {num_errors} Errors found - !!!!!!!!!")        
 
     # print(prof.key_averages(group_by_input_shape=True)
-          # .table(sort_by="cpu_time_total", row_limit=15))
-
+        # .table(sort_by="cpu_time_total", row_limit=15))
+    schedule = torch.profiler.schedule(
+            wait=0,
+            warmup=0,
+            active=1,
+            repeat = 1,
+        )
         
-    logger.debug('Destroying ACCL Process Group')
-    dist.destroy_process_group()
+
+
+    time.sleep(5)
+    mpi.Barrier()
+    logger.debug('Destroying ACCL Process Group')    
+    accl.destroy()
+    
+    #dist.destroy_process_group()
+       
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Coyote tests for ACCL ProcessGroup')
+    parser.add_argument('-b', '--backend', choices=['accl', 'mpi'], default='mpi', help='Chose backend for collectives, either accl with fpga hardware support or software mpi')
     parser.add_argument('-s', '--simulation', action='store_true',
                         default=False, help='Use simulation instead of '
                                             'hardware')
@@ -610,4 +686,4 @@ if __name__ == '__main__':
     #if args.comms != 'cyt_rdma' or not args.simulation:
     #if args.comms != 'cyt_rdma':
     #    sys.exit('Currently only supports -c cyt_rdma and -s flags')
-    start_test(args.comms, args.simulation, args.host_file, args.fpga_file, args.master_address, args.master_port)
+    start_test(args.backend, args.comms, args.simulation, args.host_file, args.fpga_file, args.master_address, args.master_port)

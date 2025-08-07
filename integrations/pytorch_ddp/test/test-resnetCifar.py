@@ -4,7 +4,13 @@ import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 from torch.nn.parallel import DistributedDataParallel as DDP
+try:
+    import accl_process_group as accl
+    ACCL_AVAILABLE = True
+except ImportError:
+    ACCL_AVAILABLE = False
 from torch.utils.data.distributed import DistributedSampler
+from torch.distributed import init_process_group, destroy_process_group, barrier
 from mpi4py.MPI import COMM_WORLD as mpi
 import torchvision.models as models
 
@@ -20,19 +26,28 @@ logger.setLevel(logging.DEBUG if os.environ.get("ACCL_DEBUG") == "1" else loggin
 
 
 def create_accl_process_group(simulator, comms, host_file, fpga_file):
-    import accl_process_group as accl
+    rxbufsize = 4194304
+    #rxbufsize = 2097152
     logger.debug("creating accl process group")
     if not simulator:
-        rxbufsize = 4096 * 1024
         if host_file is None or fpga_file is None:
             sys.exit('Host and FPGA file need to be specified in hardware mode')
         with open(host_file, 'r') as hf, open(fpga_file, 'r') as ff:
             host_ips, fpga_ips = hf.read().splitlines(), ff.read().splitlines()
-        ranks = [accl.Rank(ip, 5005 + i, i, rxbufsize) for i, ip in enumerate(fpga_ips)]
+        ranks = [accl.Rank(ip, 5005, i, rxbufsize) for i, ip in enumerate(fpga_ips)]
     else:
-        rxbufsize = 4096 * 40
         ranks = [accl.Rank("127.0.0.1", 5500 + i, i, rxbufsize) for i in range(mpi.Get_size())]
-    design = getattr(accl.ACCLDesign, comms)
+
+
+    if comms == 'udp':
+        design = accl.ACCLDesign.udp
+    elif comms == 'tcp':
+        design = accl.ACCLDesign.tcp
+    elif comms == 'cyt_rdma': # and not simulator:
+        design = accl.ACCLDesign.cyt_rdma
+
+    mpi.Barrier()
+    logger.debug(f'Creating PG: \n Ranks: {ranks} \n Design: {design} \n Bufsize: {rxbufsize} \n Simulation: {simulator}')
     accl.create_process_group(ranks, design, bufsize=rxbufsize, initialize=True, simulation=simulator)
 
 
@@ -41,23 +56,24 @@ def train(model, loaders, optimizer, loss_fn, epochs, profiler=None):
     model.train()
     total_step = len(loaders['train'])
     for epoch in range(epochs):
+        
+        start_time = time.perf_counter()
         for i, (images, labels) in enumerate(loaders['train']):
-            if (i-1) % 100 == 0 or i == 0: start_time = time.perf_counter()
-            if profiler:
+        
+            if profiler: 
                 profiler.step()
             outputs = model(images)
             loss = loss_fn(outputs, labels)
             optimizer.zero_grad()
             loss.backward()
-            optimizer.step()
-            if (i+1) % 100 == 0:
-                end_time = time.perf_counter()
-                measured_time = (end_time - start_time)
-                logger.debug ('rank: {} Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}, Time(s): {}' 
-                       .format(mpi.Get_rank(), epoch + 1, epochs, i + 1, total_step, loss.item(), measured_time))
+            optimizer.step()  
+        end_time = time.perf_counter()
+        measured_time = (end_time - start_time)
+        logger.debug ('rank: {} Epoch [{}/{}], Loss: {:.4f}, Time(s): {}' 
+                .format(mpi.Get_rank(), epoch + 1, epochs, loss.item(), measured_time))
     end_time_train = time.perf_counter()
     measured_time_train = (end_time_train - start_time_train)
-    print('Total train time: ' + str(measured_time_train))
+    logger.debug('Total train time: ' + str(measured_time_train))
 
 
 def test(model, loaders):
@@ -74,16 +90,14 @@ def test(model, loaders):
 
     end_time_test = time.perf_counter()
     measured_time_test = (end_time_test - start_time_test)
-    print('Total test time: ' + str(measured_time_test))            
-    print(f'Total accuracy: {correct}/{total} {correct/float(total)}')
+    logger.debug('Total test time: ' + str(measured_time_test))            
+    logger.debug(f'Total accuracy: {correct}/{total} {correct/float(total)}')
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-n", type=int, default=1)
-    parser.add_argument("-d", type=bool, default=None)
     parser.add_argument('-b', '--backend', choices=['accl', 'mpi'], default='mpi', help='Chose backend for collectives, either accl with fpga hardware support or software mpi')
-    parser.add_argument('-m', '--model',  choices=['resnet18', 'resnet34', 'resnet50'], default='resnet18')
+    parser.add_argument('-m', '--model',  choices=['resnet18', 'resnet34', 'resnet50'], default='resnet50')
     parser.add_argument('-s','--simulator', action='store_true', default=False)
     parser.add_argument('-c', '--comms', choices=['udp', 'tcp', 'cyt_rdma', 'mpi'], default='cyt_rdma')
     parser.add_argument('-i', '--host-file', type=str)
@@ -98,17 +112,12 @@ if __name__ == "__main__":
     rank = mpi.Get_rank()
     size = mpi.Get_size()
 
-    if args.n == 1 and args.d is None:
-        args.d = False
-    elif args.n > 1 and args.d is None:
-        args.d = True
-
-    if args.d:
+    if size > 1:
         if args.backend == 'mpi':
-            torch.distributed.init_process_group("mpi", rank=rank, world_size=size)
+            init_process_group("mpi", rank=rank, world_size=size)
         else:
             create_accl_process_group(args.simulator, args.comms, args.host_file, args.fpga_file)
-            torch.distributed.init_process_group("ACCL", rank=rank, world_size=size)
+            init_process_group("ACCL", rank=rank, world_size=size)
 
     transform = transforms.Compose([
         transforms.ToTensor(),
@@ -118,11 +127,21 @@ if __name__ == "__main__":
     trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
     testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
 
-    train_sampler = DistributedSampler(trainset) if args.d else None
 
+
+    reduced_fraction = 0.1
+    subset_size_train = int(reduced_fraction * len(trainset))
+    subset_size_test = int(reduced_fraction * len(testset))
+
+    trainset = torch.utils.data.Subset(trainset, range(subset_size_train))
+    testset = torch.utils.data.Subset(testset, range(subset_size_test))
+
+    train_sampler = DistributedSampler(trainset) if size > 1 else None
+    
+    #, sampler=train_sampler
     loaders = {
-        'train' : DataLoader(trainset, batch_size=100, shuffle=(train_sampler is None), sampler=train_sampler),
-        'test'  : DataLoader(testset, batch_size=100, shuffle=False),
+        'train' : DataLoader(trainset, batch_size=128, shuffle=(train_sampler is None)),
+        'test'  : DataLoader(testset, batch_size=128, shuffle=False),
     }
 
     if args.model == 'resnet18':
@@ -134,24 +153,36 @@ if __name__ == "__main__":
 
     model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
     model.maxpool = nn.Identity()  # Remove initial max pooling for CIFAR10 resolution
-
-    if args.d:
+    
+    #bucket_cap_mb=1
+    if size > 1 and args.backend == 'accl':
         model = DDP(model)
+    elif size > 1 and args.backend == 'mpi':
+         model = DDP(model)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    epochs = 13
+    #optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
     loss_fn = nn.CrossEntropyLoss()
+    
+    profile = False
+    schedule = torch.profiler.schedule(wait=40, warmup=0, active=80, repeat=1)
 
-    schedule = torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=2)
+    if(profile):
+        with torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU],
+            schedule=schedule,
+            on_trace_ready=torch.profiler.tensorboard_trace_handler('./cifar_profiler_log'),
+            record_shapes=True,
+            with_stack=True
+        ) as prof:
+            print()
+            train(model, loaders, optimizer, loss_fn, epochs, profiler=prof)
+            test(model, loaders)
+    else:
+            train(model, loaders, optimizer, loss_fn, epochs)
+            test(model, loaders)
 
-    with torch.profiler.profile(
-        activities=[torch.profiler.ProfilerActivity.CPU],
-        schedule=schedule,
-        on_trace_ready=torch.profiler.tensorboard_trace_handler('./cifar_profiler_log'),
-        record_shapes=True,
-        with_stack=True
-    ) as prof:
-        train(model, loaders, optimizer, loss_fn, epochs=10, profiler=prof)
-        test(model, loaders)
-
-    if args.d:
-        torch.distributed.destroy_process_group()
+    if size > 1:
+        accl.destroy()
+        #destroy_process_group()
