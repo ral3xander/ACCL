@@ -59,6 +59,7 @@ def create_process_group(
     logger.debug(f'Profiling_ranks: {profiling_ranks}')        
 
     def create_process_group_wrapper(store, rank, size, _timeout):
+        logger.debug("Started initialising PG")
         global process_group
         if process_group is not None:
             raise RuntimeError("ACCL ProcessGroup already created, "

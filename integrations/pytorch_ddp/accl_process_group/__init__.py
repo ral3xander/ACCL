@@ -18,4 +18,4 @@
 from ._c.ProcessGroupACCL import ProcessGroupACCL, Rank, DataType, ACCLDesign
 from .process_group_wrapper import create_process_group, \
     initialize, \
-    set_compression, get_compression, get_local_qp, set_remote_qp
+    set_compression, get_compression, destroy
