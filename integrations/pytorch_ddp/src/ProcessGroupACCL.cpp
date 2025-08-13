@@ -1192,25 +1192,25 @@ ProcessGroupACCL::scatter(std::vector<at::Tensor> &outputTensors,
   std::function<void(std::unique_ptr<WorkEntry> &)> runFunc =
       [opts, this](std::unique_ptr<WorkEntry> &entry) {
         #ifdef SCATTER_SIDESTEP
-	ACCL::debug("[Scatter] -- Sidestepped using OpenMPI --");
-	auto data = (entry->dst)[0];
-        void* sendbuf = nullptr;
-        at::Tensor flatInputTensor;
+	        ACCL::debug("[Scatter] -- Sidestepped using OpenMPI --");
+	        auto data = (entry->dst)[0];
+          void* sendbuf = nullptr;
+          at::Tensor flatInputTensor;
 
-        if (rank_ == opts.rootRank) {
-          std::vector<at::Tensor>& inputDataVec = entry->src;
-          flatInputTensor = newLikeFlat(inputDataVec);
-          sendbuf = flatInputTensor.data_ptr();
+          if (rank_ == opts.rootRank) {
+            std::vector<at::Tensor>& inputDataVec = entry->src;
+            flatInputTensor = newLikeFlat(inputDataVec);
+            sendbuf = flatInputTensor.data_ptr();
 
           // copy the input tensors to the flatten large send buffer
-          for (const auto i : c10::irange(inputDataVec.size())) {
-            flatInputTensor[i].copy_(inputDataVec.at(i));
+            for (const auto i : c10::irange(inputDataVec.size())) {
+              flatInputTensor[i].copy_(inputDataVec.at(i));
+            }
           }
-        }
 
-        c10::DeviceGuard guard(data.device());
-        std::unique_lock<std::mutex> globalLock(pgGlobalMutex_);
-        MPI_CHECK(MPI_Scatter(
+          c10::DeviceGuard guard(data.device());
+          std::unique_lock<std::mutex> globalLock(pgGlobalMutex_);
+          MPI_CHECK(MPI_Scatter(
             sendbuf,
             data.numel(),
             mpiDatatype.at(data.scalar_type()),
@@ -1220,23 +1220,22 @@ ProcessGroupACCL::scatter(std::vector<at::Tensor> &outputTensors,
             opts.rootRank,
             MPI_COMM_WORLD));
         #else
-        auto &srctensors = entry->src;
-        auto dsttensor = (entry->dst)[0];
-        // Segment data if necessary
-        if (dsttensor.nbytes() > bufsize) {
-	  size_t non_zero_dim_count = dsttensor.numel() / dsttensor.size(0);
-          size_t n = bufsize / 4 / dsttensor.itemsize() / non_zero_dim_count;
-          for (size_t i = 0; i < dsttensor.size(0); i += n) {
-            ACCL::debug("part " + std::to_string(i) + "!");
-            size_t end =
-                std::min(n, static_cast<size_t>(dsttensor.size(0)) - i);
-            std::vector<at::Tensor> srctensorslices;
-            srctensorslices.reserve(srctensors.size());
-            for (auto &srctensor : srctensors) {
-              srctensorslices.emplace_back(srctensor.narrow(0, i, end));
+          auto &srctensors = entry->src;
+          auto dsttensor = (entry->dst)[0];
+          // Segment data if necessary
+          if (dsttensor.nbytes() > bufsize) {
+	          size_t non_zero_dim_count = dsttensor.numel() / dsttensor.size(0);
+            size_t n = bufsize / 4 / dsttensor.itemsize() / non_zero_dim_count;
+            for (size_t i = 0; i < dsttensor.size(0); i += n) {
+              ACCL::debug("part " + std::to_string(i) + "!");
+              size_t end = std::min(n, static_cast<size_t>(dsttensor.size(0)) - i);
+              std::vector<at::Tensor> srctensorslices;
+              srctensorslices.reserve(srctensors.size());
+              for (auto &srctensor : srctensors) {
+                srctensorslices.emplace_back(srctensor.narrow(0, i, end));
+              }
+              run_scatter(srctensorslices, dsttensor.narrow(0, i, end), opts);
             }
-            run_scatter(srctensorslices, dsttensor.narrow(0, i, end), opts);
-          }
         } else {
           run_scatter(srctensors, dsttensor, opts);
         }
