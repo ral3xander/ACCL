@@ -1132,7 +1132,7 @@ ProcessGroupACCL::gather(std::vector<std::vector<at::Tensor>> &outputTensors,
         } else {
           run_gather(srctensor, dsttensors, opts);
         }
-      #endif
+    #endif
       };
 
   if (rank_ == opts.rootRank) {
@@ -1372,6 +1372,7 @@ c10::intrusive_ptr<Work> ProcessGroupACCL::alltoall_base(
         } else {
           run_alltoall(srctensor, dsttensor, opts);
         }
+      #endif
   };
   
   std::vector<at::Tensor> inputTensors = {inputTensor};
